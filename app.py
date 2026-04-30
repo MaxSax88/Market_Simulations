@@ -79,6 +79,40 @@ GEMINI_COLOR      = "#FF5000"   # fire orange-red
 GPT5_COLOR        = "#00B4FF"   # ice blue
 QWEN_COLOR        = "#A0A8B8"   # neutral steel
 
+# Page 1: fixed default run per model group (non-random)
+DEFAULT_RUN_IDS: dict[str, int] = {
+    "6Qwen-Qwen2-5-7B-Instruct":                 368,
+    "6Qwen-Qwen3-14B":                            46,
+    "6Qwen-Qwen3-14B_no_reasoning":               107,
+    "6Qwen-Qwen3-32B":                            16,
+    "6allenai-Olmo-3-7B-Instruct":                548,
+    "6allenai-Olmo-3-7B-Think":                   276,
+    "6deepseek-ai-DeepSeek-R1-Distill-Llama-8B":  202,
+    "6deepseek-ai-DeepSeek-R1-Distill-Qwen-14B":  238,
+    "6gemini-2-5-flash":                          50,
+    "6gemini-3-flash-preview":                    186,
+    "6gemma-3-27b-it":                            340,
+    "6gpt-4-1":                                   412,
+    "6gpt-4o-mini":                               284,
+    "6gpt-5-mini":                                362,
+    "6o3":                                        434,
+    "6o3-mini":                                   404,
+}
+
+# Page 2: run classification thresholds and category labels/colours
+BUBBLE_PRICE_THRESHOLD  = 300
+BUBBLE_STD_THRESHOLD    = 95
+NO_BUBBLE_STD_THRESHOLD = 25
+
+CAT_LABELS = [
+    "No bubble\n(near fundamental)",
+    "No bubble\n(some volatility)",
+    "Bubble\n(early volatility)",
+    "Bubble\n(late volatility)",
+    "Bubble\n(persistent)",
+]
+CAT_COLORS = ["#60BD68", "#DECF3F", "#FAA43A", "#E05530", "#B03020"]
+
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -144,6 +178,54 @@ def predicted_pivot(prices: pd.DataFrame, run_id: int) -> pd.DataFrame:
             .sort_index())
 
 
+def classify_run(peak: float, early_std: float, late_std: float) -> str:
+    if peak <= BUBBLE_PRICE_THRESHOLD:
+        if early_std < NO_BUBBLE_STD_THRESHOLD and late_std < NO_BUBBLE_STD_THRESHOLD:
+            return CAT_LABELS[0]
+        return CAT_LABELS[1]
+    if early_std >= BUBBLE_STD_THRESHOLD and late_std >= BUBBLE_STD_THRESHOLD:
+        return CAT_LABELS[4]
+    if early_std >= BUBBLE_STD_THRESHOLD:
+        return CAT_LABELS[2]
+    if late_std >= BUBBLE_STD_THRESHOLD:
+        return CAT_LABELS[3]
+    return CAT_LABELS[4]
+
+
+@st.cache_data(show_spinner=False)
+def chaos_category_map(meta: pd.DataFrame) -> dict[int, str]:
+    rows = meta[meta.model_group == CHAOS_GROUP]
+    return {
+        int(r.run_id): classify_run(r.peak_price, r.early_std, r.late_std)
+        for _, r in rows.iterrows()
+    }
+
+
+def render_category_bar_chart(counts: dict[str, int]) -> go.Figure:
+    total = sum(counts.values())
+    vals  = [counts[l] for l in CAT_LABELS]
+    texts = [f"{v / total * 100:.0f}%" if total > 0 else "" for v in vals]
+    fig   = go.Figure(go.Bar(
+        x=CAT_LABELS, y=vals,
+        marker_color=CAT_COLORS,
+        text=texts,
+        textposition="auto",
+    ))
+    title = f"Outcomes after {total} roll{'s' if total != 1 else ''}" if total > 0 else "Roll to begin"
+    layout = base_layout(height=260)
+    layout.update(
+        xaxis=dict(title=None, tickfont=dict(size=11), gridcolor=GRID_COLOR, zerolinecolor=GRID_COLOR),
+        yaxis=dict(title="Count", gridcolor=GRID_COLOR, zerolinecolor=GRID_COLOR),
+        margin=dict(l=50, r=20, t=50, b=80),
+        title_text=title,
+        title_font=dict(size=13, color="#C8CDD7"),
+        hovermode="x unified",
+        showlegend=False,
+    )
+    fig.update_layout(layout)
+    return fig
+
+
 # ---------------------------------------------------------------------------
 # Playback controls (Streamlit-native, rendered ABOVE the chart)
 # ---------------------------------------------------------------------------
@@ -193,7 +275,7 @@ def advance_playback(key_prefix: str, t: int) -> None:
     t_key    = f"{key_prefix}_t"
     if st.session_state.get(play_key, False):
         if t < 49:
-            time.sleep(0.07)
+            time.sleep(0.063)
             st.session_state[t_key] = t + 1   # safe: t_key is NOT widget-bound
             st.rerun()
         else:
@@ -242,18 +324,19 @@ def snapshot_figure(
     t: int,
     show_predictions: bool,
     height: int = 480,
-) -> go.Figure:
-    """Snapshot of a single run up to time step t (for Pages 1 & 2)."""
+) -> tuple[go.Figure, bool]:
+    """Snapshot of a single run up to time step t (for Pages 1 & 2).
+
+    Returns (fig, truncated) where truncated=True means the y-axis is capped at
+    150 because the visible price has not yet exceeded that threshold.
+    """
     actual = actual_series(prices, run_id)
     actual_t = actual[actual.time_step <= t]
-
-    y_max = float(actual.actual_price.max())
 
     fig = go.Figure(layout=base_layout(height=height))
 
     if show_predictions:
-        pred = predicted_pivot(prices, run_id)
-        y_max = max(y_max, float(pred.max().max()))
+        pred   = predicted_pivot(prices, run_id)
         pred_t = pred[pred.index <= t]
         for i, agent_id in enumerate(pred_t.columns):
             fig.add_trace(go.Scatter(
@@ -271,27 +354,30 @@ def snapshot_figure(
         line=dict(color=ACTUAL_COLOR, width=3),
     ))
 
-    fig.update_layout(yaxis_range=[-5, y_max * 1.06 + 5])
+    visible_max = float(actual_t.actual_price.max()) if len(actual_t) > 0 else 0.0
+    if visible_max > 150:
+        fig.update_layout(yaxis_range=[0, 1000])
+        truncated = False
+    else:
+        fig.update_layout(yaxis_range=[0, 150])
+        truncated = True
+
     add_fundamental_line(fig)
-    return fig
+    return fig, truncated
 
 
-def duel_snapshot_figure(prices: pd.DataFrame, t: int, height: int = 560) -> go.Figure:
+def duel_snapshot_figure(prices: pd.DataFrame, t: int, height: int = 560) -> tuple[go.Figure, bool]:
     """Single-panel overlay of all three duel runs up to time step t.
 
     Gemini gets a fire glow (orange-red), GPT-5 gets an ice glow (blue),
     Qwen stays neutral steel. All three lines reveal together as t advances.
-    """
-    # Fix y-axis to full data range so it never jumps during playback
-    y_max = 0.0
-    for rid in (QWEN_BASELINE_RUN_ID, GEMINI_HERO_RUN_ID, GPT5_HERO_RUN_ID):
-        y_max = max(y_max, float(actual_series(prices, rid).actual_price.max()))
 
+    Returns (fig, truncated) where truncated=True means the y-axis is capped at 150.
+    """
     fig = go.Figure(layout=base_layout(height=height))
-    fig.update_layout(yaxis_range=[-5, y_max * 1.06 + 5])
 
     # ── Qwen baseline — neutral steel ────────────────────────────────────────
-    qwen = actual_series(prices, QWEN_BASELINE_RUN_ID)
+    qwen   = actual_series(prices, QWEN_BASELINE_RUN_ID)
     qwen_t = qwen[qwen.time_step <= t]
     fig.add_trace(go.Scatter(
         x=qwen_t.time_step, y=qwen_t.actual_price,
@@ -301,13 +387,12 @@ def duel_snapshot_figure(prices: pd.DataFrame, t: int, height: int = 560) -> go.
     ))
 
     # ── Gemini — fire glow ────────────────────────────────────────────────────
-    gem = actual_series(prices, GEMINI_HERO_RUN_ID)
+    gem   = actual_series(prices, GEMINI_HERO_RUN_ID)
     gem_t = gem[gem.time_step <= t]
-    # Wide semi-transparent halo for the glow effect
     fig.add_trace(go.Scatter(
         x=gem_t.time_step, y=gem_t.actual_price,
         mode="lines", showlegend=False, hoverinfo="skip",
-        line=dict(color=f"rgba(255,80,0,0.15)", width=16),
+        line=dict(color="rgba(255,80,0,0.15)", width=16),
     ))
     fig.add_trace(go.Scatter(
         x=gem_t.time_step, y=gem_t.actual_price,
@@ -317,12 +402,12 @@ def duel_snapshot_figure(prices: pd.DataFrame, t: int, height: int = 560) -> go.
     ))
 
     # ── GPT-5 mini — ice glow ────────────────────────────────────────────────
-    gpt = actual_series(prices, GPT5_HERO_RUN_ID)
+    gpt   = actual_series(prices, GPT5_HERO_RUN_ID)
     gpt_t = gpt[gpt.time_step <= t]
     fig.add_trace(go.Scatter(
         x=gpt_t.time_step, y=gpt_t.actual_price,
         mode="lines", showlegend=False, hoverinfo="skip",
-        line=dict(color=f"rgba(0,180,255,0.15)", width=16),
+        line=dict(color="rgba(0,180,255,0.15)", width=16),
     ))
     fig.add_trace(go.Scatter(
         x=gpt_t.time_step, y=gpt_t.actual_price,
@@ -331,8 +416,21 @@ def duel_snapshot_figure(prices: pd.DataFrame, t: int, height: int = 560) -> go.
         line=dict(color=GPT5_COLOR, width=3),
     ))
 
+    # Dynamic y-axis: based on the visible max across all three series at time t
+    visible_max = max(
+        float(qwen_t.actual_price.max()) if len(qwen_t) > 0 else 0.0,
+        float(gem_t.actual_price.max())  if len(gem_t)  > 0 else 0.0,
+        float(gpt_t.actual_price.max())  if len(gpt_t)  > 0 else 0.0,
+    )
+    if visible_max > 150:
+        fig.update_layout(yaxis_range=[0, 1000])
+        truncated = False
+    else:
+        fig.update_layout(yaxis_range=[0, 150])
+        truncated = True
+
     add_fundamental_line(fig)
-    return fig
+    return fig, truncated
 
 
 # ---------------------------------------------------------------------------
@@ -375,11 +473,14 @@ def page_spirit_gallery(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
         index=homogeneous.index(QWEN_GROUP) if QWEN_GROUP in homogeneous else 0,
     )
 
-    # Pick a new random run whenever the model changes; reset playback.
+    # Use a fixed default run whenever the model changes; reset playback.
     if st.session_state.get("p1_group") != chosen_group:
         st.session_state["p1_group"]   = chosen_group
         group_runs = meta[meta.model_group == chosen_group]
-        st.session_state["p1_run_id"]  = int(random.choice(group_runs.run_id.tolist()))
+        default_id = DEFAULT_RUN_IDS.get(chosen_group)
+        if default_id is None:
+            default_id = int(random.choice(group_runs.run_id.tolist()))
+        st.session_state["p1_run_id"]  = default_id
         st.session_state["p1_t"]       = 0
         st.session_state["p1_playing"] = False
 
@@ -391,8 +492,10 @@ def page_spirit_gallery(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
     )
 
     t = render_playback_controls("p1")
-    fig = snapshot_figure(prices, chosen_run, t, show_predictions=show_pred)
+    fig, truncated = snapshot_figure(prices, chosen_run, t, show_predictions=show_pred)
     st.plotly_chart(fig, width="stretch")
+    if truncated:
+        st.caption("⚠️ Axis truncated to 150 for visibility")
 
     st.caption(
         "Bold line: the realized market price. Thin lines: each agent's "
@@ -434,14 +537,22 @@ def page_chaos(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
 
     if "chaos_run_id" not in st.session_state:
         st.session_state["chaos_run_id"] = int(chaos_runs.iloc[0].run_id)
+    if "chaos_cat_counts" not in st.session_state:
+        st.session_state["chaos_cat_counts"] = {l: 0 for l in CAT_LABELS}
+
+    cat_map = chaos_category_map(meta)
 
     col_btn, col_caption = st.columns([1, 4])
     with col_btn:
         if st.button("🎲  Run Chaos Roulette", type="primary", use_container_width=True):
-            st.session_state["chaos_run_id"] = int(random.choice(chaos_runs.run_id.tolist()))
+            new_run_id = int(random.choice(chaos_runs.run_id.tolist()))
+            st.session_state["chaos_run_id"] = new_run_id
             # Reset playback and auto-play so the new run animates from the start
             st.session_state["p2_t"]       = 0
             st.session_state["p2_playing"] = True
+            # Increment category count for this run
+            cat = cat_map.get(new_run_id, CAT_LABELS[0])
+            st.session_state["chaos_cat_counts"][cat] += 1
     with col_caption:
         st.markdown(
             f"<span class='ticker-pill'>{len(chaos_runs)} seeds available</span>",
@@ -460,8 +571,10 @@ def page_chaos(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
     )
 
     t = render_playback_controls("p2")
-    fig = snapshot_figure(prices, int(run_id), t, show_predictions=show_pred, height=480)
+    fig, truncated = snapshot_figure(prices, int(run_id), t, show_predictions=show_pred, height=480)
     st.plotly_chart(fig, width="stretch")
+    if truncated:
+        st.caption("⚠️ Axis truncated to 150 for visibility")
 
     label, severity = volatility_label(row.early_std, row.late_std)
     m1, m2, m3 = st.columns(3)
@@ -479,6 +592,19 @@ def page_chaos(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
 
     advance_playback("p2", t)
 
+    st.divider()
+    st.subheader("Outcome distribution")
+    c_chart, c_reset = st.columns([8, 1])
+    with c_reset:
+        if st.button("↺", help="Reset counts", key="reset_cat_counts"):
+            st.session_state["chaos_cat_counts"] = {l: 0 for l in CAT_LABELS}
+            st.rerun()
+    with c_chart:
+        st.plotly_chart(
+            render_category_bar_chart(st.session_state["chaos_cat_counts"]),
+            use_container_width=True,
+        )
+
 
 # ---------------------------------------------------------------------------
 # Page 3: The Adaptation Duel
@@ -493,8 +619,10 @@ def page_adaptation_duel(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
     )
 
     t = render_playback_controls("p3")
-    fig = duel_snapshot_figure(prices, t)
+    fig, truncated = duel_snapshot_figure(prices, t)
     st.plotly_chart(fig, width="stretch")
+    if truncated:
+        st.caption("⚠️ Axis truncated to 150 for visibility")
 
     advance_playback("p3", t)
 
