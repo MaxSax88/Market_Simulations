@@ -99,16 +99,17 @@ DEFAULT_RUN_IDS: dict[str, int] = {
 }
 
 # Page 2: run classification thresholds and category labels/colours
-BUBBLE_PRICE_THRESHOLD  = 300
-BUBBLE_STD_THRESHOLD    = 95
-NO_BUBBLE_STD_THRESHOLD = 25
+BUBBLE_PRICE_THRESHOLD      = 300
+BUBBLE_CONSEC_STEPS         = 3    # consecutive steps above threshold to count as bubble
+BUBBLE_STD_THRESHOLD        = 100
+NO_BUBBLE_STD_THRESHOLD     = 20
 
 CAT_LABELS = [
-    "No bubble\n(near fundamental)",
-    "No bubble\n(some volatility)",
+    "No bubble\n(low volatility)",
+    "No bubble\n(volatility)",
     "Bubble\n(early volatility)",
     "Bubble\n(late volatility)",
-    "Bubble\n(persistent)",
+    "Bubble\n(persistent volatility)",
 ]
 CAT_COLORS = ["#60BD68", "#DECF3F", "#FAA43A", "#E05530", "#B03020"]
 
@@ -182,8 +183,19 @@ def predicted_pivot(prices: pd.DataFrame, run_id: int) -> pd.DataFrame:
             .sort_index())
 
 
-def classify_run(peak: float, early_std: float, late_std: float) -> str:
-    if peak <= BUBBLE_PRICE_THRESHOLD:
+def has_bubble(price_series: "pd.Series") -> bool:
+    """True if price exceeds BUBBLE_PRICE_THRESHOLD for BUBBLE_CONSEC_STEPS consecutive steps."""
+    above = (price_series > BUBBLE_PRICE_THRESHOLD).values
+    consec = 0
+    for v in above:
+        consec = consec + 1 if v else 0
+        if consec >= BUBBLE_CONSEC_STEPS:
+            return True
+    return False
+
+
+def classify_run(bubble: bool, early_std: float, late_std: float) -> str:
+    if not bubble:
         if early_std < NO_BUBBLE_STD_THRESHOLD and late_std < NO_BUBBLE_STD_THRESHOLD:
             return CAT_LABELS[0]
         return CAT_LABELS[1]
@@ -197,21 +209,27 @@ def classify_run(peak: float, early_std: float, late_std: float) -> str:
 
 
 @st.cache_data(show_spinner=False)
-def chaos_category_map(meta: pd.DataFrame) -> dict[int, str]:
+def chaos_category_map(prices: pd.DataFrame, meta: pd.DataFrame) -> dict[int, str]:
     rows = meta[meta.model_group == CHAOS_GROUP]
-    return {
-        int(r.run_id): classify_run(r.peak_price, r.early_std, r.late_std)
-        for _, r in rows.iterrows()
-    }
+    result: dict[int, str] = {}
+    for _, r in rows.iterrows():
+        run_id = int(r.run_id)
+        price_series = actual_series(prices, run_id)["actual_price"]
+        result[run_id] = classify_run(has_bubble(price_series), r.early_std, r.late_std)
+    return result
 
 
 def render_category_bar_chart(counts: dict[str, int]) -> go.Figure:
     total = sum(counts.values())
-    vals  = [counts[l] for l in CAT_LABELS]
-    texts = [f"{v / total * 100:.0f}%" if total > 0 else "" for v in vals]
-    fig   = go.Figure(go.Bar(
-        x=CAT_LABELS, y=vals,
-        marker_color=CAT_COLORS,
+    # Sort highest → lowest so the tallest bar is always on the left
+    order = sorted(range(len(CAT_LABELS)), key=lambda i: counts.get(CAT_LABELS[i], 0), reverse=True)
+    labels = [CAT_LABELS[i] for i in order]
+    colors = [CAT_COLORS[i] for i in order]
+    vals   = [counts[l] for l in labels]
+    texts  = [f"{v / total * 100:.0f}%" if total > 0 else "" for v in vals]
+    fig    = go.Figure(go.Bar(
+        x=labels, y=vals,
+        marker_color=colors,
         text=texts,
         textposition="auto",
     ))
@@ -543,7 +561,7 @@ def page_chaos(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
     if "chaos_cat_counts" not in st.session_state:
         st.session_state["chaos_cat_counts"] = {l: 0 for l in CAT_LABELS}
 
-    cat_map = chaos_category_map(meta)
+    cat_map = chaos_category_map(prices, meta)
 
     col_btn, col_caption = st.columns([1, 4])
     with col_btn:
