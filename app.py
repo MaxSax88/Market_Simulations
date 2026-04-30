@@ -297,7 +297,7 @@ def advance_playback(key_prefix: str, t: int) -> None:
     t_key    = f"{key_prefix}_t"
     if st.session_state.get(play_key, False):
         if t < 49:
-            time.sleep(0.022)
+            time.sleep(0.01)
             st.session_state[t_key] = t + 1   # safe: t_key is NOT widget-bound
             st.rerun()
         else:
