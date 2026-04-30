@@ -21,6 +21,7 @@ from pathlib import Path
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from plotly.subplots import make_subplots
 
 
 # ---------------------------------------------------------------------------
@@ -155,13 +156,12 @@ def predicted_pivot(prices: pd.DataFrame, run_id: int) -> pd.DataFrame:
 # Plot helpers
 # ---------------------------------------------------------------------------
 
-def base_layout(title: str, height: int = 460) -> dict:
+def base_layout(height: int = 460) -> dict:
     return dict(
-        title=dict(text=title, x=0.0, font=dict(size=18, color="#E5E9F0")),
         paper_bgcolor=BG_COLOR,
         plot_bgcolor=BG_COLOR,
         font=dict(color="#C8CDD7", family="Inter, system-ui, sans-serif"),
-        margin=dict(l=40, r=20, t=60, b=40),
+        margin=dict(l=40, r=20, t=20, b=80),
         height=height,
         xaxis=dict(
             title="Time step", gridcolor=GRID_COLOR, zerolinecolor=GRID_COLOR,
@@ -171,7 +171,7 @@ def base_layout(title: str, height: int = 460) -> dict:
             title="Price", gridcolor=GRID_COLOR, zerolinecolor=GRID_COLOR,
         ),
         legend=dict(
-            orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0,
+            orientation="h", yanchor="top", y=-0.18, xanchor="center", x=0.5,
             bgcolor="rgba(0,0,0,0)",
         ),
         hovermode="x unified",
@@ -193,13 +193,12 @@ def add_fundamental_line(fig: go.Figure) -> None:
 def static_run_figure(
     prices: pd.DataFrame,
     run_id: int,
-    title: str,
     show_predictions: bool,
     height: int = 460,
 ) -> go.Figure:
     """Static (non-animated) chart: actual + 6 agent prediction lines."""
     actual = actual_series(prices, run_id)
-    fig = go.Figure(layout=base_layout(title, height=height))
+    fig = go.Figure(layout=base_layout(height=height))
 
     if show_predictions:
         pred = predicted_pivot(prices, run_id)
@@ -226,7 +225,6 @@ def static_run_figure(
 def animated_run_figure(
     prices: pd.DataFrame,
     run_id: int,
-    title: str,
     show_predictions: bool,
     height: int = 520,
 ) -> go.Figure:
@@ -276,15 +274,18 @@ def animated_run_figure(
                 ))
         frames.append(go.Frame(data=frame_data, name=str(t)))
 
-    layout = base_layout(title, height=height)
+    layout = base_layout(height=height)
+    layout["margin"] = dict(l=40, r=20, t=80, b=110)
     layout["yaxis"]["range"] = [-5, y_max + y_pad]
     layout["updatemenus"] = [dict(
         type="buttons",
         showactive=False,
-        x=0.01, y=1.18, xanchor="left", yanchor="top",
+        direction="left",
+        x=0.0, y=1.14, xanchor="left", yanchor="top",
         bgcolor="#1C2230",
         bordercolor="#1C2230",
         font=dict(color="#E5E9F0"),
+        pad=dict(r=10, t=4, b=4),
         buttons=[
             dict(label="▶  Play",
                  method="animate",
@@ -299,7 +300,7 @@ def animated_run_figure(
         ],
     )]
     layout["sliders"] = [dict(
-        active=0, x=0.12, y=1.10, len=0.85,
+        active=0, x=0.18, y=1.06, len=0.80,
         currentvalue=dict(prefix="t = ", font=dict(color="#C8CDD7")),
         bgcolor="#1C2230",
         steps=[dict(method="animate",
@@ -309,9 +310,136 @@ def animated_run_figure(
                     label=str(t))
                for t in range(1, n_steps + 1)],
     )]
+    layout["legend"] = dict(
+        orientation="h", yanchor="top", y=-0.18, xanchor="center", x=0.5,
+        bgcolor="rgba(0,0,0,0)",
+    )
 
     fig = go.Figure(data=initial_traces, layout=layout, frames=frames)
     add_fundamental_line(fig)
+    return fig
+
+
+def synchronized_duel_figure(
+    prices: pd.DataFrame,
+    panels: list[tuple[int, str]],
+    height: int = 540,
+) -> go.Figure:
+    """Three-subplot animated figure with a single Play button driving all panels."""
+    n_panels = len(panels)
+    fig = make_subplots(
+        rows=1, cols=n_panels,
+        subplot_titles=[t for _, t in panels],
+        horizontal_spacing=0.06,
+        shared_yaxes=True,
+    )
+
+    panel_series = []
+    y_max = 0.0
+    for col_idx, (run_id, _) in enumerate(panels, start=1):
+        actual = actual_series(prices, run_id)
+        pred = predicted_pivot(prices, run_id)
+        panel_series.append((actual, pred, col_idx))
+        y_max = max(y_max, float(actual.actual_price.max()), float(pred.max().max()))
+    y_pad = y_max * 0.06 + 5
+
+    for actual, pred, col_idx in panel_series:
+        for i, agent_id in enumerate(pred.columns):
+            fig.add_trace(go.Scatter(
+                x=pred.index[:1], y=pred[agent_id].values[:1],
+                mode="lines",
+                line=dict(color=AGENT_PALETTE[i % len(AGENT_PALETTE)], width=1),
+                opacity=0.55,
+                showlegend=False,
+                hoverinfo="skip",
+            ), row=1, col=col_idx)
+        fig.add_trace(go.Scatter(
+            x=actual.time_step[:1], y=actual.actual_price[:1],
+            mode="lines",
+            line=dict(color=ACTUAL_COLOR, width=3),
+            showlegend=False,
+        ), row=1, col=col_idx)
+
+    n_steps = int(panel_series[0][0].time_step.max()) + 1
+    frames = []
+    for t in range(1, n_steps + 1):
+        frame_data = []
+        for actual, pred, _col_idx in panel_series:
+            for agent_id in pred.columns:
+                frame_data.append(go.Scatter(
+                    x=pred.index.values[:t],
+                    y=pred[agent_id].values[:t],
+                ))
+            frame_data.append(go.Scatter(
+                x=actual.time_step.values[:t],
+                y=actual.actual_price.values[:t],
+            ))
+        frames.append(go.Frame(data=frame_data, name=str(t)))
+    fig.frames = frames
+
+    for col_idx in range(1, n_panels + 1):
+        fig.add_hline(
+            y=FUNDAMENTAL_PRICE,
+            line_dash="dash", line_color=FUNDAMENTAL_COLOR,
+            opacity=0.6,
+            row=1, col=col_idx,
+        )
+
+    fig.update_layout(
+        paper_bgcolor=BG_COLOR,
+        plot_bgcolor=BG_COLOR,
+        font=dict(color="#C8CDD7", family="Inter, system-ui, sans-serif"),
+        margin=dict(l=40, r=20, t=120, b=40),
+        height=height,
+        showlegend=False,
+        hovermode="x unified",
+        updatemenus=[dict(
+            type="buttons", showactive=False, direction="left",
+            x=0.0, y=1.18, xanchor="left", yanchor="top",
+            bgcolor="#1C2230", bordercolor="#1C2230",
+            font=dict(color="#E5E9F0"),
+            pad=dict(r=10, t=4, b=4),
+            buttons=[
+                dict(label="▶  Play all",
+                     method="animate",
+                     args=[None, dict(frame=dict(duration=90, redraw=True),
+                                      fromcurrent=True,
+                                      transition=dict(duration=0))]),
+                dict(label="❚❚  Pause",
+                     method="animate",
+                     args=[[None], dict(frame=dict(duration=0, redraw=False),
+                                        mode="immediate",
+                                        transition=dict(duration=0))]),
+            ],
+        )],
+        sliders=[dict(
+            active=0, x=0.18, y=1.10, len=0.80,
+            currentvalue=dict(prefix="t = ", font=dict(color="#C8CDD7")),
+            bgcolor="#1C2230",
+            steps=[dict(method="animate",
+                        args=[[str(t)], dict(mode="immediate",
+                                              frame=dict(duration=0, redraw=True),
+                                              transition=dict(duration=0))],
+                        label=str(t))
+                   for t in range(1, n_steps + 1)],
+        )],
+    )
+
+    for col_idx in range(1, n_panels + 1):
+        fig.update_xaxes(
+            range=[0, 49], gridcolor=GRID_COLOR,
+            title_text="Time step",
+            row=1, col=col_idx,
+        )
+        fig.update_yaxes(
+            range=[-5, y_max + y_pad], gridcolor=GRID_COLOR,
+            row=1, col=col_idx,
+        )
+    fig.update_yaxes(title_text="Price", row=1, col=1)
+
+    for ann in fig.layout.annotations:
+        ann.font = dict(color="#E5E9F0", size=14)
+
     return fig
 
 
@@ -325,33 +453,11 @@ def render_sidebar() -> str:
 
     page = st.sidebar.radio(
         "Pages",
-        ["1 — The Spirit Gallery",
+        ["1 — A taxonomy of Machine Spirits",
          "2 — Mixed Market Chaos",
          "3 — The Adaptation Duel"],
         label_visibility="collapsed",
     )
-
-    with st.sidebar.expander("Research context", expanded=False):
-        st.markdown(
-            "Six LLM agents trade a single asset over **50 periods**. Each "
-            "period, every agent submits an expected next-period price. The "
-            "market clears at:"
-        )
-        st.latex(
-            r"p_t \;=\; \frac{1}{1+r}\left(\frac{1}{6}\sum_{h=1}^{6} "
-            r"p_{h,t+1}^{e} \;+\; \bar{y}\right)"
-        )
-        st.markdown(
-            f"The **fundamental price** is **p_f = {FUNDAMENTAL_PRICE:.0f}**. "
-            "Because tomorrow's price depends on the average of today's "
-            "expectations, optimism is self-fulfilling — small upward biases "
-            "compound into bubbles. Different LLMs anchor very differently, "
-            "and a single non-trend-following agent in a mixed market can "
-            "shift the entire dynamic."
-        )
-
-    st.sidebar.markdown("---")
-    st.sidebar.caption("Press R to rerun · ⓘ to view source")
     return page
 
 
@@ -360,7 +466,7 @@ def render_sidebar() -> str:
 # ---------------------------------------------------------------------------
 
 def page_spirit_gallery(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
-    st.title("The Spirit Gallery")
+    st.title("A taxonomy of Machine Spirits")
     st.caption(
         "Each LLM has its own economic disposition. Pick a homogeneous market "
         "(six copies of the same model) and watch how the price evolves."
@@ -386,34 +492,24 @@ def page_spirit_gallery(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
     default_run = (group_runs.assign(d=(group_runs.iqr - median_iqr).abs())
                               .sort_values("d").iloc[0].run_id)
 
+    seed_lookup = dict(zip(group_runs.run_id.astype(int),
+                           group_runs.seed.astype(int)))
+
     with col_seed:
         chosen_run = st.selectbox(
-            "Seed / run",
+            "Seed",
             options=group_runs.run_id.tolist(),
-            format_func=lambda rid: (
-                f"seed {int(group_runs.loc[group_runs.run_id == rid, 'seed'].iloc[0]):>2d}"
-                f"   (peak {group_runs.loc[group_runs.run_id == rid, 'peak_price'].iloc[0]:.0f},"
-                f"  IQR {group_runs.loc[group_runs.run_id == rid, 'iqr'].iloc[0]:.0f})"
-            ),
+            format_func=lambda rid: f"Seed {seed_lookup[int(rid)]:>2d}",
             index=int(group_runs.run_id.tolist().index(int(default_run))),
         )
 
-    show_pred = st.checkbox("Show agent forecasts", value=True,
-                            help="Overlay each of the 6 agents' next-period price expectations.")
-
-    fig = animated_run_figure(
-        prices, chosen_run,
-        title=f"{display_name(chosen_group)} — actual price over 50 periods",
-        show_predictions=show_pred,
+    show_pred = st.checkbox(
+        "Show agent forecasts", value=True,
+        help="Overlay each of the 6 agents' next-period price expectations.",
     )
-    st.plotly_chart(fig, width="stretch")
 
-    row = group_runs[group_runs.run_id == chosen_run].iloc[0]
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Peak price", f"{row.peak_price:.1f}")
-    m2.metric("Mean price", f"{row.mean_price:.1f}")
-    m3.metric("IQR (price)", f"{row.iqr:.1f}")
-    m4.metric("Late std", f"{row.late_std:.1f}")
+    fig = animated_run_figure(prices, chosen_run, show_predictions=show_pred)
+    st.plotly_chart(fig, width="stretch")
 
     st.caption(
         "Bold line: the realized market price. Thin lines: each agent's "
@@ -470,12 +566,12 @@ def page_chaos(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
     row = chaos_runs[chaos_runs.run_id == run_id].iloc[0]
 
     show_pred = st.checkbox("Show agent forecasts", value=True, key="chaos_show_pred")
-    fig = static_run_figure(
-        prices, int(run_id),
-        title=f"Seed {int(row.seed)}  ·  {row.filename}",
-        show_predictions=show_pred,
-        height=480,
+    st.markdown(
+        f"<div style='margin: 4px 0 -8px 4px; color:#9BA4B5;'>"
+        f"<span class='ticker-pill'>Seed {int(row.seed)}</span></div>",
+        unsafe_allow_html=True,
     )
+    fig = static_run_figure(prices, int(run_id), show_predictions=show_pred, height=480)
     st.plotly_chart(fig, width="stretch")
 
     label, severity = volatility_label(row.early_std, row.late_std)
@@ -500,88 +596,43 @@ def page_adaptation_duel(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
     st.title("The Adaptation Duel")
     st.caption(
         "Five Qwen-3 14B trend-followers, plus one adaptive agent. Swap that "
-        "single agent and the market changes character. The center column "
-        "shows what pure Qwen does on its own — the substrate the next two "
-        "columns disrupt."
+        "single agent and the market changes character. Hit **▶ Play all** to "
+        "watch all three markets evolve in lockstep."
     )
 
+    fig = synchronized_duel_figure(
+        prices,
+        panels=[
+            (QWEN_BASELINE_RUN_ID, "Baseline · 6× Qwen-3 14B"),
+            (GEMINI_HERO_RUN_ID,   "5× Qwen + 1× Gemini-3 Flash"),
+            (GPT5_HERO_RUN_ID,     "5× Qwen + 1× GPT-5 mini"),
+        ],
+    )
+    st.plotly_chart(fig, width="stretch")
+
     col_qwen, col_gemini, col_gpt5 = st.columns(3)
-
-    def render_column(col, run_id: int, group: str, title: str, callout_kind: str,
-                      callout_title: str, callout_body: str) -> None:
-        with col:
-            st.subheader(title)
-            row = meta[meta.run_id == run_id].iloc[0]
-            fig = static_run_figure(
-                prices, run_id,
-                title=f"Seed {int(row.seed)}  ·  IQR {row.iqr:.0f}",
-                show_predictions=True,
-                height=380,
-            )
-            fig.update_layout(showlegend=False, margin=dict(l=30, r=10, t=50, b=30))
-            st.plotly_chart(fig, width="stretch")
-            st.metric("IQR (this run)", f"{row.iqr:.1f}")
-            {"info": st.info, "warning": st.warning, "success": st.success}[callout_kind](
-                f"**{callout_title}**\n\n{callout_body}"
-            )
-
-    render_column(
-        col_qwen, QWEN_BASELINE_RUN_ID, QWEN_GROUP,
-        title="Baseline · 6× Qwen-3 14B",
-        callout_kind="info",
-        callout_title="Pure trend-following",
-        callout_body=(
+    with col_qwen:
+        st.info(
+            "**Pure trend-following**\n\n"
             "Six identical Qwen agents agree on momentum. The market bubbles "
             "high, crashes, and eventually settles back near the fundamental. "
             "This is the substrate the next two columns disrupt."
-        ),
-    )
-
-    render_column(
-        col_gemini, GEMINI_HERO_RUN_ID, GEMINI_GROUP,
-        title="5× Qwen + 1× Gemini-3 Flash",
-        callout_kind="warning",
-        callout_title="🦅  Apex Predator",
-        callout_body=(
+        )
+    with col_gemini:
+        st.warning(
+            "**🦅  Apex Predator**\n\n"
             "Gemini-3 Flash uses theory-of-mind to model what the trend-followers "
             "will do — and front-runs them. Each time the market starts to "
             "mean-revert, Gemini reignites the bubble. Result: **two distinct "
-            "peaks** and the largest IQR of any configuration."
-        ),
-    )
-
-    render_column(
-        col_gpt5, GPT5_HERO_RUN_ID, GPT5_GROUP,
-        title="5× Qwen + 1× GPT-5 mini",
-        callout_kind="success",
-        callout_title="🛡  Volatility damper",
-        callout_body=(
+            "peaks** that never settle."
+        )
+    with col_gpt5:
+        st.success(
+            "**🛡  Volatility damper**\n\n"
             "GPT-5 mini anchors close to the fundamental and refuses to chase "
             "the rally. After one initial bubble episode, its persistent counter-"
             "weight pulls the market back to a tight band near p_f."
-        ),
-    )
-
-    st.markdown("---")
-    st.subheader("Population-level volatility (mean IQR across all seeds)")
-    st.caption(
-        "The single runs above are extreme examples chosen for visual contrast. "
-        "Averaged across every seed in each subset, the volatility ordering is "
-        "the same — Gemini tops, Qwen middle, GPT-5 lowest."
-    )
-
-    pop_iqr = (meta[meta.model_group.isin([QWEN_GROUP, GEMINI_GROUP, GPT5_GROUP])]
-               .groupby("model_group")["iqr"].mean())
-
-    p1, p2, p3 = st.columns(3)
-    p1.metric("6× Qwen baseline", f"{pop_iqr.get(QWEN_GROUP, float('nan')):.1f}",
-              help=f"n = {(meta.model_group == QWEN_GROUP).sum()} runs")
-    p2.metric("5× Qwen + Gemini", f"{pop_iqr.get(GEMINI_GROUP, float('nan')):.1f}",
-              delta=f"+{pop_iqr.get(GEMINI_GROUP,0) - pop_iqr.get(QWEN_GROUP,0):.0f} vs baseline",
-              help=f"n = {(meta.model_group == GEMINI_GROUP).sum()} runs")
-    p3.metric("5× Qwen + GPT-5", f"{pop_iqr.get(GPT5_GROUP, float('nan')):.1f}",
-              delta=f"{pop_iqr.get(GPT5_GROUP,0) - pop_iqr.get(QWEN_GROUP,0):+.0f} vs baseline",
-              help=f"n = {(meta.model_group == GPT5_GROUP).sum()} runs")
+        )
 
 
 # ---------------------------------------------------------------------------
