@@ -30,7 +30,6 @@ DATA_FILE = Path(__file__).parent / "dashboard_data.parquet"
 META_FILE = Path(__file__).parent / "runs_meta.parquet"
 
 FUNDAMENTAL_PRICE = 60.0
-VOLATILITY_THRESHOLD = 100.0
 
 CHAOS_GROUP = (
     "1Qwen-Qwen3-14B_and_1allenai-Olmo-3-7B-Think"
@@ -280,7 +279,7 @@ def advance_playback(key_prefix: str, t: int) -> None:
     t_key    = f"{key_prefix}_t"
     if st.session_state.get(play_key, False):
         if t < 49:
-            time.sleep(0.063)
+            time.sleep(0.044)
             st.session_state[t_key] = t + 1   # safe: t_key is NOT widget-bound
             st.rerun()
         else:
@@ -329,12 +328,8 @@ def snapshot_figure(
     t: int,
     show_predictions: bool,
     height: int = 480,
-) -> tuple[go.Figure, bool]:
-    """Snapshot of a single run up to time step t (for Pages 1 & 2).
-
-    Returns (fig, truncated) where truncated=True means the y-axis is capped at
-    150 because the visible price has not yet exceeded that threshold.
-    """
+) -> go.Figure:
+    """Snapshot of a single run up to time step t (for Pages 1 & 2)."""
     actual = actual_series(prices, run_id)
     actual_t = actual[actual.time_step <= t]
 
@@ -362,22 +357,29 @@ def snapshot_figure(
     run_max = float(actual.actual_price.max())
     if run_max > 150:
         fig.update_layout(yaxis_range=[0, 1000])
-        truncated = False
     else:
         fig.update_layout(yaxis_range=[0, 150])
-        truncated = True
+        fig.add_annotation(
+            xref="paper", yref="paper", x=0.01, y=0.97,
+            text="⚠ Axis capped at 150",
+            showarrow=False,
+            font=dict(size=13, color="#DECF3F"),
+            align="left",
+            bgcolor="rgba(14,17,23,0.82)",
+            bordercolor="#DECF3F",
+            borderwidth=1,
+            borderpad=5,
+        )
 
     add_fundamental_line(fig)
-    return fig, truncated
+    return fig
 
 
-def duel_snapshot_figure(prices: pd.DataFrame, t: int, height: int = 560) -> tuple[go.Figure, bool]:
+def duel_snapshot_figure(prices: pd.DataFrame, t: int, height: int = 560) -> go.Figure:
     """Single-panel overlay of all three duel runs up to time step t.
 
     Gemini gets a fire glow (orange-red), GPT-5 gets an ice glow (blue),
     Qwen stays neutral steel. All three lines reveal together as t advances.
-
-    Returns (fig, truncated) where truncated=True means the y-axis is capped at 150.
     """
     fig = go.Figure(layout=base_layout(height=height))
 
@@ -421,7 +423,7 @@ def duel_snapshot_figure(prices: pd.DataFrame, t: int, height: int = 560) -> tup
         line=dict(color=GPT5_COLOR, width=3),
     ))
 
-    # Static y-axis: based on the full peak across all three runs (not the visible slice)
+    # Static y-axis: based on the full peak across all three runs
     run_max = max(
         float(actual_series(prices, QWEN_BASELINE_RUN_ID).actual_price.max()),
         float(actual_series(prices, GEMINI_HERO_RUN_ID).actual_price.max()),
@@ -429,13 +431,22 @@ def duel_snapshot_figure(prices: pd.DataFrame, t: int, height: int = 560) -> tup
     )
     if run_max > 150:
         fig.update_layout(yaxis_range=[0, 1000])
-        truncated = False
     else:
         fig.update_layout(yaxis_range=[0, 150])
-        truncated = True
+        fig.add_annotation(
+            xref="paper", yref="paper", x=0.01, y=0.97,
+            text="⚠ Axis capped at 150",
+            showarrow=False,
+            font=dict(size=13, color="#DECF3F"),
+            align="left",
+            bgcolor="rgba(14,17,23,0.82)",
+            bordercolor="#DECF3F",
+            borderwidth=1,
+            borderpad=5,
+        )
 
     add_fundamental_line(fig)
-    return fig, truncated
+    return fig
 
 
 # ---------------------------------------------------------------------------
@@ -447,7 +458,7 @@ def render_sidebar() -> str:
     st.sidebar.caption("Speculation & adaptation of LLM agents in asset markets")
     return st.sidebar.radio(
         "Pages",
-        ["1 — A taxonomy of Machine Spirits",
+        ["1 — Taxonomy of Machine Spirits",
          "2 — Mixed Market Chaos",
          "3 — The Adaptation Duel"],
         label_visibility="collapsed",
@@ -459,7 +470,7 @@ def render_sidebar() -> str:
 # ---------------------------------------------------------------------------
 
 def page_spirit_gallery(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
-    st.title("A taxonomy of Machine Spirits")
+    st.title("Taxonomy of Machine Spirits")
     st.caption(
         "Each LLM has its own economic disposition. Pick a homogeneous market "
         "(six copies of the same model) and watch how the price evolves."
@@ -497,10 +508,8 @@ def page_spirit_gallery(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
     )
 
     t = render_playback_controls("p1")
-    fig, truncated = snapshot_figure(prices, chosen_run, t, show_predictions=show_pred)
+    fig = snapshot_figure(prices, chosen_run, t, show_predictions=show_pred)
     st.plotly_chart(fig, width="stretch")
-    if truncated:
-        st.caption("⚠️ Axis truncated to 150 for visibility")
 
     st.caption(
         "Bold line: the realized market price. Thin lines: each agent's "
@@ -514,17 +523,6 @@ def page_spirit_gallery(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
 # ---------------------------------------------------------------------------
 # Page 2: Mixed Market Chaos
 # ---------------------------------------------------------------------------
-
-def volatility_label(early_std: float, late_std: float) -> tuple[str, str]:
-    early_hi = early_std > VOLATILITY_THRESHOLD
-    late_hi  = late_std  > VOLATILITY_THRESHOLD
-    if early_hi and late_hi:
-        return "Persistent volatility", "error"
-    if early_hi:
-        return "Early volatility", "warning"
-    if late_hi:
-        return "Late volatility", "warning"
-    return "Stable", "success"
 
 
 def page_chaos(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
@@ -576,24 +574,23 @@ def page_chaos(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
     )
 
     t = render_playback_controls("p2")
-    fig, truncated = snapshot_figure(prices, int(run_id), t, show_predictions=show_pred, height=480)
+    fig = snapshot_figure(prices, int(run_id), t, show_predictions=show_pred, height=480)
+    if t == 49:
+        cat = cat_map.get(int(run_id), "")
+        if cat in CAT_LABELS:
+            cat_color = CAT_COLORS[CAT_LABELS.index(cat)]
+            fig.add_annotation(
+                xref="paper", yref="paper", x=0.98, y=0.96,
+                text=f"<b>{cat.replace(chr(10), '  ')}</b>",
+                showarrow=False,
+                font=dict(size=22, color=cat_color),
+                align="right",
+                bgcolor="rgba(14,17,23,0.88)",
+                bordercolor=cat_color,
+                borderwidth=2,
+                borderpad=10,
+            )
     st.plotly_chart(fig, width="stretch")
-    if truncated:
-        st.caption("⚠️ Axis truncated to 150 for visibility")
-
-    label, severity = volatility_label(row.early_std, row.late_std)
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Early std (t < 25)", f"{row.early_std:.1f}",
-              delta="volatile" if row.early_std > VOLATILITY_THRESHOLD else "calm",
-              delta_color="off")
-    m2.metric("Late std (t ≥ 25)", f"{row.late_std:.1f}",
-              delta="volatile" if row.late_std  > VOLATILITY_THRESHOLD else "calm",
-              delta_color="off")
-    m3.metric("Peak price", f"{row.peak_price:.1f}")
-
-    {"success": st.success, "warning": st.warning, "error": st.error}[severity](
-        f"**Regime:** {label}  ·  threshold = std > {VOLATILITY_THRESHOLD:.0f}"
-    )
 
     advance_playback("p2", t)
 
@@ -624,10 +621,8 @@ def page_adaptation_duel(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
     )
 
     t = render_playback_controls("p3")
-    fig, truncated = duel_snapshot_figure(prices, t)
+    fig = duel_snapshot_figure(prices, t)
     st.plotly_chart(fig, width="stretch")
-    if truncated:
-        st.caption("⚠️ Axis truncated to 150 for visibility")
 
     advance_playback("p3", t)
 
