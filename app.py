@@ -83,9 +83,9 @@ QWEN_COLOR        = "#A0A8B8"   # neutral steel
 DEFAULT_RUN_IDS: dict[str, int] = {
     "6Qwen-Qwen2-5-7B-Instruct":                 368,
     "6Qwen-Qwen3-14B":                            46,
-    "6Qwen-Qwen3-14B_no_reasoning":               107,
+    "6Qwen-Qwen3-14B_no_reasoning":               109,  # seed 15, peak 242 (highest normal run)
     "6Qwen-Qwen3-32B":                            16,
-    "6allenai-Olmo-3-7B-Instruct":                548,
+    "6allenai-Olmo-3-7B-Instruct":                517,  # seed 12, peak 125 (highest normal run)
     "6allenai-Olmo-3-7B-Think":                   276,
     "6deepseek-ai-DeepSeek-R1-Distill-Llama-8B":  202,
     "6deepseek-ai-DeepSeek-R1-Distill-Qwen-14B":  238,
@@ -157,7 +157,12 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
             f"generate `{DATA_FILE.name}` and `{META_FILE.name}`."
         )
         st.stop()
-    return pd.read_parquet(DATA_FILE), pd.read_parquet(META_FILE)
+    meta   = pd.read_parquet(META_FILE)
+    prices = pd.read_parquet(DATA_FILE)
+    # Keep only standard runs (res_seed_<int>.pkl); exclude extrapolate/nonlinear variants
+    meta   = meta[meta["filename"].str.match(r"^res_seed_\d+\.pkl$", na=False)]
+    prices = prices[prices["run_id"].isin(meta["run_id"])]
+    return prices, meta
 
 
 def display_name(model_group: str) -> str:
@@ -354,8 +359,8 @@ def snapshot_figure(
         line=dict(color=ACTUAL_COLOR, width=3),
     ))
 
-    visible_max = float(actual_t.actual_price.max()) if len(actual_t) > 0 else 0.0
-    if visible_max > 150:
+    run_max = float(actual.actual_price.max())
+    if run_max > 150:
         fig.update_layout(yaxis_range=[0, 1000])
         truncated = False
     else:
@@ -416,13 +421,13 @@ def duel_snapshot_figure(prices: pd.DataFrame, t: int, height: int = 560) -> tup
         line=dict(color=GPT5_COLOR, width=3),
     ))
 
-    # Dynamic y-axis: based on the visible max across all three series at time t
-    visible_max = max(
-        float(qwen_t.actual_price.max()) if len(qwen_t) > 0 else 0.0,
-        float(gem_t.actual_price.max())  if len(gem_t)  > 0 else 0.0,
-        float(gpt_t.actual_price.max())  if len(gpt_t)  > 0 else 0.0,
+    # Static y-axis: based on the full peak across all three runs (not the visible slice)
+    run_max = max(
+        float(actual_series(prices, QWEN_BASELINE_RUN_ID).actual_price.max()),
+        float(actual_series(prices, GEMINI_HERO_RUN_ID).actual_price.max()),
+        float(actual_series(prices, GPT5_HERO_RUN_ID).actual_price.max()),
     )
-    if visible_max > 150:
+    if run_max > 150:
         fig.update_layout(yaxis_range=[0, 1000])
         truncated = False
     else:
@@ -602,7 +607,7 @@ def page_chaos(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
     with c_chart:
         st.plotly_chart(
             render_category_bar_chart(st.session_state["chaos_cat_counts"]),
-            use_container_width=True,
+            width="stretch",
         )
 
 
