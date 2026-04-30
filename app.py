@@ -279,7 +279,7 @@ def advance_playback(key_prefix: str, t: int) -> None:
     t_key    = f"{key_prefix}_t"
     if st.session_state.get(play_key, False):
         if t < 49:
-            time.sleep(0.044)
+            time.sleep(0.022)
             st.session_state[t_key] = t + 1   # safe: t_key is NOT widget-bound
             st.rerun()
         else:
@@ -596,16 +596,22 @@ def page_chaos(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
 
     st.divider()
     st.subheader("Outcome distribution")
-    c_chart, c_reset = st.columns([8, 1])
+    c_sample, c_reset = st.columns([2, 1])
+    with c_sample:
+        if st.button("⚡ Sample 500 runs", help="Draw 500 random seeds and tally their outcomes instantly", key="sample_500"):
+            run_ids = chaos_runs.run_id.tolist()
+            for rid in random.choices(run_ids, k=500):
+                cat = cat_map.get(int(rid), CAT_LABELS[0])
+                st.session_state["chaos_cat_counts"][cat] += 1
+            st.rerun()
     with c_reset:
-        if st.button("↺", help="Reset counts", key="reset_cat_counts"):
+        if st.button("↺ Reset", help="Reset counts", key="reset_cat_counts"):
             st.session_state["chaos_cat_counts"] = {l: 0 for l in CAT_LABELS}
             st.rerun()
-    with c_chart:
-        st.plotly_chart(
-            render_category_bar_chart(st.session_state["chaos_cat_counts"]),
-            width="stretch",
-        )
+    st.plotly_chart(
+        render_category_bar_chart(st.session_state["chaos_cat_counts"]),
+        width="stretch",
+    )
 
 
 # ---------------------------------------------------------------------------
