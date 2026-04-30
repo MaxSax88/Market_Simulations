@@ -82,9 +82,9 @@ QWEN_COLOR        = "#A0A8B8"   # neutral steel
 DEFAULT_RUN_IDS: dict[str, int] = {
     "6Qwen-Qwen2-5-7B-Instruct":                 368,
     "6Qwen-Qwen3-14B":                            46,
-    "6Qwen-Qwen3-14B_no_reasoning":               109,  # seed 15, peak 242 (highest normal run)
+    "6Qwen-Qwen3-14B_no_reasoning":               109,  
     "6Qwen-Qwen3-32B":                            16,
-    "6allenai-Olmo-3-7B-Instruct":                517,  # seed 12, peak 125 (highest normal run)
+    "6allenai-Olmo-3-7B-Instruct":                517,  
     "6allenai-Olmo-3-7B-Think":                   276,
     "6deepseek-ai-DeepSeek-R1-Distill-Llama-8B":  202,
     "6deepseek-ai-DeepSeek-R1-Distill-Qwen-14B":  238,
@@ -407,7 +407,7 @@ def duel_snapshot_figure(prices: pd.DataFrame, t: int, height: int = 560) -> go.
     fig.add_trace(go.Scatter(
         x=qwen_t.time_step, y=qwen_t.actual_price,
         mode="lines",
-        name="🧭  Qwen-3 14B — Baseline",
+        name="🧭  6x Qwen-3 14B — Baseline",
         line=dict(color=QWEN_COLOR, width=2.5, dash="dot"),
     ))
 
@@ -422,7 +422,7 @@ def duel_snapshot_figure(prices: pd.DataFrame, t: int, height: int = 560) -> go.
     fig.add_trace(go.Scatter(
         x=gem_t.time_step, y=gem_t.actual_price,
         mode="lines",
-        name="🔥  Gemini-3 Flash — Apex Predator",
+        name="🔥  1x Gemini-3 Flash vs 5x Qwen-3 14B",
         line=dict(color=GEMINI_COLOR, width=3),
     ))
 
@@ -437,7 +437,7 @@ def duel_snapshot_figure(prices: pd.DataFrame, t: int, height: int = 560) -> go.
     fig.add_trace(go.Scatter(
         x=gpt_t.time_step, y=gpt_t.actual_price,
         mode="lines",
-        name="🧊  GPT-5 mini — Volatility Damper",
+        name="🧊  1x GPT-5 mini vs 5x Qwen-3 14B",
         line=dict(color=GPT5_COLOR, width=3),
     ))
 
@@ -532,7 +532,7 @@ def page_spirit_gallery(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
     st.caption(
         "Bold line: the realized market price. Thin lines: each agent's "
         f"submitted forecast for the next period. The dashed line marks the "
-        f"fundamental value p_f = {FUNDAMENTAL_PRICE:.0f}."
+        f"fundamental value $p_f$ = {FUNDAMENTAL_PRICE:.0f}."
     )
 
     advance_playback("p1", t)
@@ -639,9 +639,8 @@ def page_chaos(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
 def page_adaptation_duel(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
     st.title("The Adaptation Duel")
     st.caption(
-        "Five Qwen-3 14B trend-followers, plus one adaptive agent. Swap that "
-        "single agent and the market changes character entirely. Hit ▶ to watch "
-        "all three markets unfold together — fire, ice, and the neutral baseline."
+        "Five Qwen-3 14B trend-followers, plus one adaptive agent. Hit ▶ to watch "
+        "three different markets unfold and see the impact of that one adaptive agent."
     )
 
     t = render_playback_controls("p3")
