@@ -64,5 +64,9 @@ quickly and stays comfortably within the free tier's memory.
 
 ## Citation
 
-> Anonymous. *Machine Spirits: Speculation and Adaptation of LLM Agents in
+> *Machine Spirits: Speculation and Adaptation of LLM Agents in
 > Asset Markets.* 2026.
+
+## AI Use
+
+This app has been primarily written using Claude Code with human checking and tweaks. 
