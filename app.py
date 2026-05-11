@@ -689,7 +689,7 @@ def page_intro(prices: pd.DataFrame, meta: pd.DataFrame) -> None:  # noqa: ARG00
     st.markdown(
         """
         This dashboard is an interactive companion to the paper
-        **"Machine Spirits: Speculation and Adaptation of LLM Agents in Asset Markets"**.
+        **[Machine Spirits: Speculation and Adaptation of LLM Agents in Asset Markets](https://arxiv.org/abs/2604.18602)**.
 
         ---
 
