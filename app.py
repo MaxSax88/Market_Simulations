@@ -68,15 +68,15 @@ MODEL_DISPLAY_NAMES: dict[str, str] = {
 }
 
 # Plotly palette
-ACTUAL_COLOR      = "#F2F2F2"
-FUNDAMENTAL_COLOR = "#7CFFA1"
+ACTUAL_COLOR      = "#1A1A2E"
+FUNDAMENTAL_COLOR = "#16A34A"
 AGENT_PALETTE     = ["#5DA5DA", "#FAA43A", "#60BD68", "#F17CB0", "#B276B2", "#DECF3F"]
-BG_COLOR          = "#0E1117"
-GRID_COLOR        = "#1C2230"
+BG_COLOR          = "#FFFFFF"
+GRID_COLOR        = "#E2E8F0"
 
 GEMINI_COLOR      = "#FF5000"   # fire orange-red
 GPT5_COLOR        = "#00B4FF"   # ice blue
-QWEN_COLOR        = "#A0A8B8"   # neutral steel
+QWEN_COLOR        = "#6B7280"   # neutral gray (darkened for light bg)
 
 # Page 1: fixed default run per model group (non-random)
 DEFAULT_RUN_IDS: dict[str, int] = {
@@ -113,6 +113,25 @@ CAT_LABELS = [
 ]
 CAT_COLORS = ["#60BD68", "#DECF3F", "#FAA43A", "#E05530", "#B03020"]
 
+# Agent-id → model name mapping for the 6-model CHAOS_GROUP
+# Order matches the CHAOS_GROUP string: Qwen, OLMo, DeepSeek, Gemini, Gemma, GPT-5
+CHAOS_AGENT_NAMES: dict[int, str] = {
+    0: "Qwen-3 14B",
+    1: "OLMo-3 7B Think",
+    2: "DeepSeek-R1 Llama 8B",
+    3: "Gemini-3 Flash",
+    4: "Gemma-3 27B",
+    5: "GPT-5 mini",
+}
+CHAOS_AGENT_COLORS: dict[int, str] = {
+    0: "#5DA5DA",
+    1: "#FAA43A",
+    2: "#60BD68",
+    3: "#FF5000",
+    4: "#B276B2",
+    5: "#00B4FF",
+}
+
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -128,7 +147,6 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-      .stApp { background-color: #0E1117; }
       h1, h2, h3 { letter-spacing: -0.02em; }
       [data-testid="stMetricValue"] { font-family: "SF Mono", "Menlo", monospace; }
       [data-testid="stMetricLabel"] {
@@ -136,7 +154,7 @@ st.markdown(
       }
       .ticker-pill {
           display: inline-block; padding: 2px 10px; border-radius: 999px;
-          background: #1C2230; color: #9BA4B5; font-family: "SF Mono", monospace;
+          background: #E2E8F0; color: #4A5568; font-family: "SF Mono", monospace;
           font-size: 0.8rem; letter-spacing: 0.05em;
       }
     </style>
@@ -219,6 +237,54 @@ def chaos_category_map(prices: pd.DataFrame, meta: pd.DataFrame) -> dict[int, st
     return result
 
 
+def compute_earnings_df(prices: pd.DataFrame, run_id: int) -> pd.DataFrame:
+    """Per-agent, per-step earnings using the quadratic scoring rule from the paper.
+
+    e_{h,t} = max( 1300 - (1300/49) * (p_t - p^e_{h,t})^2, 0 )
+    """
+    sub = prices[prices.run_id == run_id][
+        ["agent_id", "time_step", "predicted_price", "actual_price"]
+    ].copy()
+    sub["earnings"] = (
+        1300 - (1300 / 49) * (sub["actual_price"] - sub["predicted_price"]) ** 2
+    ).clip(lower=0)
+    return sub[["agent_id", "time_step", "earnings"]]
+
+
+def render_earnings_chart(earnings_df: pd.DataFrame, up_to_t: int) -> go.Figure:
+    """Horizontal bar chart of cumulative earnings per agent up to time step t."""
+    filtered = earnings_df[earnings_df.time_step <= up_to_t]
+    cumul = filtered.groupby("agent_id")["earnings"].sum().reset_index()
+    cumul["name"] = cumul["agent_id"].map(CHAOS_AGENT_NAMES)
+    cumul["color"] = cumul["agent_id"].map(CHAOS_AGENT_COLORS)
+    cumul = cumul.sort_values("earnings")  # ascending so winner is at top
+
+    layout = base_layout(height=240)
+    layout.update(
+        xaxis=dict(
+            title="Cumulative earnings (pts)",
+            range=[0, 1300 * 50],
+            gridcolor=GRID_COLOR,
+            zerolinecolor=GRID_COLOR,
+        ),
+        yaxis=dict(title=None, gridcolor=GRID_COLOR, zerolinecolor=GRID_COLOR),
+        margin=dict(l=150, r=20, t=10, b=50),
+        showlegend=False,
+        hovermode="y unified",
+    )
+    fig = go.Figure(layout=layout)
+    fig.add_trace(go.Bar(
+        x=cumul["earnings"],
+        y=cumul["name"],
+        orientation="h",
+        marker_color=cumul["color"],
+        text=cumul["earnings"].apply(lambda v: f"{v:,.0f}"),
+        textposition="outside",
+        cliponaxis=False,
+    ))
+    return fig
+
+
 def render_category_bar_chart(counts: dict[str, int]) -> go.Figure:
     total = sum(counts.values())
     # Sort highest → lowest so the tallest bar is always on the left
@@ -240,7 +306,7 @@ def render_category_bar_chart(counts: dict[str, int]) -> go.Figure:
         yaxis=dict(title="Count", gridcolor=GRID_COLOR, zerolinecolor=GRID_COLOR),
         margin=dict(l=50, r=20, t=50, b=80),
         title_text=title,
-        title_font=dict(size=13, color="#C8CDD7"),
+        title_font=dict(size=13, color="#1A1A2E"),
         hovermode="x unified",
         showlegend=False,
     )
@@ -312,7 +378,7 @@ def base_layout(height: int = 480) -> dict:
     return dict(
         paper_bgcolor=BG_COLOR,
         plot_bgcolor=BG_COLOR,
-        font=dict(color="#C8CDD7", family="Inter, system-ui, sans-serif"),
+        font=dict(color="#1A1A2E", family="Inter, system-ui, sans-serif"),
         margin=dict(l=50, r=20, t=20, b=90),
         height=height,
         xaxis=dict(
@@ -346,8 +412,13 @@ def snapshot_figure(
     t: int,
     show_predictions: bool,
     height: int = 480,
+    dynamic_yaxis: bool = False,
 ) -> go.Figure:
-    """Snapshot of a single run up to time step t (for Pages 1 & 2)."""
+    """Snapshot of a single run up to time step t (for Pages 1 & 2).
+
+    When dynamic_yaxis=True the y-axis grows with the data as t increases,
+    hiding the spoiler of whether a bubble will form.
+    """
     actual = actual_series(prices, run_id)
     actual_t = actual[actual.time_step <= t]
 
@@ -365,29 +436,57 @@ def snapshot_figure(
                 opacity=0.55,
             ))
 
+    if dynamic_yaxis:
+        current_price = float(actual_t.actual_price.iloc[-1]) if not actual_t.empty else 0.0
+        if current_price > BUBBLE_PRICE_THRESHOLD:
+            line_color, line_width = "#FF5000", 4
+        elif current_price > 200:
+            line_color, line_width = "#FAA43A", 3.5
+        else:
+            line_color, line_width = ACTUAL_COLOR, 3
+    else:
+        line_color, line_width = ACTUAL_COLOR, 3
+
     fig.add_trace(go.Scatter(
         x=actual_t.time_step, y=actual_t.actual_price,
         mode="lines",
         name="Actual price",
-        line=dict(color=ACTUAL_COLOR, width=3),
+        line=dict(color=line_color, width=line_width),
     ))
 
-    run_max = float(actual.actual_price.max())
-    if run_max > 150:
-        fig.update_layout(yaxis_range=[0, 1000])
+    if dynamic_yaxis:
+        t_max = float(actual_t.actual_price.max()) if not actual_t.empty else 0.0
+        y_max = max(150.0, t_max * 1.15)
+        fig.update_layout(yaxis_range=[0, y_max])
+        if 200 < t_max <= BUBBLE_PRICE_THRESHOLD:
+            fig.add_annotation(
+                xref="paper", yref="paper", x=0.98, y=0.96,
+                text="⚡ Price surging...",
+                showarrow=False,
+                font=dict(size=15, color="#FAA43A"),
+                align="right",
+                bgcolor="rgba(255,255,255,0.9)",
+                bordercolor="#FAA43A",
+                borderwidth=1,
+                borderpad=6,
+            )
     else:
-        fig.update_layout(yaxis_range=[0, 150])
-        fig.add_annotation(
-            xref="paper", yref="paper", x=0.01, y=0.97,
-            text="⚠ Axis capped at 150",
-            showarrow=False,
-            font=dict(size=13, color="#DECF3F"),
-            align="left",
-            bgcolor="rgba(14,17,23,0.82)",
-            bordercolor="#DECF3F",
-            borderwidth=1,
-            borderpad=5,
-        )
+        run_max = float(actual.actual_price.max())
+        if run_max > 150:
+            fig.update_layout(yaxis_range=[0, 1000])
+        else:
+            fig.update_layout(yaxis_range=[0, 150])
+            fig.add_annotation(
+                xref="paper", yref="paper", x=0.01, y=0.97,
+                text="⚠ Axis capped at 150",
+                showarrow=False,
+                font=dict(size=13, color="#DECF3F"),
+                align="left",
+                bgcolor="rgba(255,255,255,0.88)",
+                bordercolor="#DECF3F",
+                borderwidth=1,
+                borderpad=5,
+            )
 
     add_fundamental_line(fig)
     return fig
@@ -457,7 +556,7 @@ def duel_snapshot_figure(prices: pd.DataFrame, t: int, height: int = 560) -> go.
             showarrow=False,
             font=dict(size=13, color="#DECF3F"),
             align="left",
-            bgcolor="rgba(14,17,23,0.82)",
+            bgcolor="rgba(255,255,255,0.88)",
             bordercolor="#DECF3F",
             borderwidth=1,
             borderpad=5,
@@ -465,6 +564,72 @@ def duel_snapshot_figure(prices: pd.DataFrame, t: int, height: int = 560) -> go.
 
     add_fundamental_line(fig)
     return fig
+
+
+# ---------------------------------------------------------------------------
+# Page 0: Introduction
+# ---------------------------------------------------------------------------
+
+def page_intro(prices: pd.DataFrame, meta: pd.DataFrame) -> None:  # noqa: ARG001
+    st.title("Machine Spirits")
+    st.subheader("A Simulated Market of LLM Agents")
+
+    st.markdown(
+        """
+        This dashboard is an interactive companion to the paper
+        **"Machine Spirits: Speculation and Adaptation of LLM Agents in Asset Markets"**.
+
+        ---
+
+        ### How does the market work?
+
+        Six AI language models (LLMs) each act as a trader in a simple financial market.
+        Every period (round), each agent submits its **forecast** of what the asset price
+        will be next period.  The actual market price that emerges is then the average of
+        all six forecasts, plus a fixed dividend — so the price is literally *made of
+        beliefs*.
+
+        Because today's price depends on what agents expect tomorrow, and tomorrow's
+        expectations react to today's price, the market has a built-in **feedback loop**.
+        This loop is what allows prices to spiral far above the true fundamental value —
+        a *bubble* — or converge smoothly towards it, depending on how each model reasons.
+
+        ### What is the fundamental value?
+
+        The asset has a true underlying value of **$60** (marked as the dashed green line
+        in all charts).  A perfectly rational agent would always forecast $60 and the
+        market would never deviate.  In practice, LLMs behave very differently from one
+        another — some anchor close to $60, others trend-chase and amplify deviations.
+
+        ### What can I explore?
+        """
+    )
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.info(
+            "**📊 Taxonomy of Machine Spirits**\n\n"
+            "Pick a model and watch 6 copies of it trade together. "
+            "How does each LLM's economic 'personality' shape the market?"
+        )
+    with col2:
+        st.info(
+            "**🎲 Mixed Market Chaos**\n\n"
+            "Six *different* LLMs share one market. Roll the dice — same models, "
+            "different random seeds — and see how wildly outcomes can vary."
+        )
+    with col3:
+        st.info(
+            "**⚔️ The Adaptation Duel**\n\n"
+            "Five Qwen trend-followers plus one adaptive agent. "
+            "Watch how a single model can shift the entire market."
+        )
+
+    st.markdown("---")
+    st.caption(
+        "Use the sidebar on the left to navigate between the three pages. "
+        "Each page has playback controls — press ▶ to animate the market evolving step by step."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -476,7 +641,8 @@ def render_sidebar() -> str:
     st.sidebar.caption("Speculation & adaptation of LLM agents in asset markets")
     return st.sidebar.radio(
         "Pages",
-        ["1 — Taxonomy of Machine Spirits",
+        ["0 — Introduction",
+         "1 — Taxonomy of Machine Spirits",
          "2 — Mixed Market Chaos",
          "3 — The Adaptation Duel"],
         label_visibility="collapsed",
@@ -586,13 +752,14 @@ def page_chaos(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
     show_pred = st.checkbox("Show agent forecasts", value=True, key="chaos_show_pred")
 
     st.markdown(
-        f"<div style='margin: 4px 0 -8px 4px; color:#9BA4B5;'>"
+        f"<div style='margin: 4px 0 -8px 4px; color:#4A5568;'>"
         f"<span class='ticker-pill'>Seed {int(row.seed)}</span></div>",
         unsafe_allow_html=True,
     )
 
     t = render_playback_controls("p2")
-    fig = snapshot_figure(prices, int(run_id), t, show_predictions=show_pred, height=480)
+    fig = snapshot_figure(prices, int(run_id), t, show_predictions=show_pred, height=480,
+                          dynamic_yaxis=True)
     if t == 49:
         cat = cat_map.get(int(run_id), "")
         if cat in CAT_LABELS:
@@ -603,7 +770,7 @@ def page_chaos(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
                 showarrow=False,
                 font=dict(size=22, color=cat_color),
                 align="right",
-                bgcolor="rgba(14,17,23,0.88)",
+                bgcolor="rgba(255,255,255,0.92)",
                 bordercolor=cat_color,
                 borderwidth=2,
                 borderpad=10,
@@ -611,6 +778,22 @@ def page_chaos(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
     st.plotly_chart(fig, width="stretch")
 
     advance_playback("p2", t)
+
+    st.divider()
+    st.subheader("Agent Earnings")
+    st.caption(
+        "Each agent earns points based on forecast accuracy. "
+        "The closer the prediction to the realized price, the higher the score "
+        f"(max {1300:,} pts per period)."
+    )
+    earnings_df = compute_earnings_df(prices, int(run_id))
+    st.plotly_chart(render_earnings_chart(earnings_df, t), width="stretch")
+    if t == 49:
+        cumul = earnings_df.groupby("agent_id")["earnings"].sum()
+        winner_id = int(cumul.idxmax())
+        winner_name = CHAOS_AGENT_NAMES.get(winner_id, f"Agent {winner_id}")
+        winner_pts = int(cumul.max())
+        st.success(f"🏆 Winner: **{winner_name}** — {winner_pts:,} pts")
 
     st.divider()
     st.subheader("Outcome distribution")
@@ -657,7 +840,9 @@ def page_adaptation_duel(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
 def main() -> None:
     prices, meta = load_data()
     page = render_sidebar()
-    if page.startswith("1"):
+    if page.startswith("0"):
+        page_intro(prices, meta)
+    elif page.startswith("1"):
         page_spirit_gallery(prices, meta)
     elif page.startswith("2"):
         page_chaos(prices, meta)
