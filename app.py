@@ -14,11 +14,11 @@ Data:  dashboard_data.parquet + runs_meta.parquet (produced by prepare_data.py).
 from __future__ import annotations
 
 import random
-import time
 from pathlib import Path
 
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 
 
@@ -74,17 +74,17 @@ AGENT_PALETTE     = ["#5DA5DA", "#FAA43A", "#60BD68", "#F17CB0", "#B276B2", "#DE
 BG_COLOR          = "#FFFFFF"
 GRID_COLOR        = "#E2E8F0"
 
-GEMINI_COLOR      = "#FF5000"   # fire orange-red
-GPT5_COLOR        = "#00B4FF"   # ice blue
-QWEN_COLOR        = "#6B7280"   # neutral gray (darkened for light bg)
+GEMINI_COLOR      = "#FF5000"
+GPT5_COLOR        = "#00B4FF"
+QWEN_COLOR        = "#6B7280"
 
 # Page 1: fixed default run per model group (non-random)
 DEFAULT_RUN_IDS: dict[str, int] = {
     "6Qwen-Qwen2-5-7B-Instruct":                 368,
     "6Qwen-Qwen3-14B":                            46,
-    "6Qwen-Qwen3-14B_no_reasoning":               109,  
+    "6Qwen-Qwen3-14B_no_reasoning":               109,
     "6Qwen-Qwen3-32B":                            16,
-    "6allenai-Olmo-3-7B-Instruct":                517,  
+    "6allenai-Olmo-3-7B-Instruct":                517,
     "6allenai-Olmo-3-7B-Think":                   276,
     "6deepseek-ai-DeepSeek-R1-Distill-Llama-8B":  202,
     "6deepseek-ai-DeepSeek-R1-Distill-Qwen-14B":  238,
@@ -99,10 +99,10 @@ DEFAULT_RUN_IDS: dict[str, int] = {
 }
 
 # Page 2: run classification thresholds and category labels/colours
-BUBBLE_PRICE_THRESHOLD      = 300
-BUBBLE_CONSEC_STEPS         = 3    # consecutive steps above threshold to count as bubble
-BUBBLE_STD_THRESHOLD        = 100
-NO_BUBBLE_STD_THRESHOLD     = 20
+BUBBLE_PRICE_THRESHOLD  = 300
+BUBBLE_CONSEC_STEPS     = 3
+BUBBLE_STD_THRESHOLD    = 100
+NO_BUBBLE_STD_THRESHOLD = 20
 
 CAT_LABELS = [
     "No bubble\n(low volatility)",
@@ -113,8 +113,6 @@ CAT_LABELS = [
 ]
 CAT_COLORS = ["#60BD68", "#DECF3F", "#FAA43A", "#E05530", "#B03020"]
 
-# Agent-id → model name mapping for the 6-model CHAOS_GROUP
-# Order matches the CHAOS_GROUP string: Qwen, OLMo, DeepSeek, Gemini, Gemma, GPT-5
 CHAOS_AGENT_NAMES: dict[int, str] = {
     0: "Qwen-3 14B",
     1: "OLMo-3 7B Think",
@@ -177,7 +175,6 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
         st.stop()
     meta   = pd.read_parquet(META_FILE)
     prices = pd.read_parquet(DATA_FILE)
-    # Keep only standard runs (res_seed_<int>.pkl); exclude extrapolate/nonlinear variants
     meta   = meta[meta["filename"].str.match(r"^res_seed_\d+\.pkl$", na=False)]
     prices = prices[prices["run_id"].isin(meta["run_id"])]
     return prices, meta
@@ -187,6 +184,7 @@ def display_name(model_group: str) -> str:
     return MODEL_DISPLAY_NAMES.get(model_group, model_group)
 
 
+@st.cache_data(show_spinner=False)
 def actual_series(prices: pd.DataFrame, run_id: int) -> pd.DataFrame:
     sub = prices[prices.run_id == run_id]
     anchor = sub.agent_id.min()
@@ -195,6 +193,7 @@ def actual_series(prices: pd.DataFrame, run_id: int) -> pd.DataFrame:
             .reset_index(drop=True))
 
 
+@st.cache_data(show_spinner=False)
 def predicted_pivot(prices: pd.DataFrame, run_id: int) -> pd.DataFrame:
     sub = prices[prices.run_id == run_id]
     return (sub.pivot(index="time_step", columns="agent_id", values="predicted_price")
@@ -202,7 +201,6 @@ def predicted_pivot(prices: pd.DataFrame, run_id: int) -> pd.DataFrame:
 
 
 def has_bubble(price_series: "pd.Series") -> bool:
-    """True if price exceeds BUBBLE_PRICE_THRESHOLD for BUBBLE_CONSEC_STEPS consecutive steps."""
     above = (price_series > BUBBLE_PRICE_THRESHOLD).values
     consec = 0
     for v in above:
@@ -237,6 +235,7 @@ def chaos_category_map(prices: pd.DataFrame, meta: pd.DataFrame) -> dict[int, st
     return result
 
 
+@st.cache_data(show_spinner=False)
 def compute_earnings_df(prices: pd.DataFrame, run_id: int) -> pd.DataFrame:
     """Per-agent, per-step earnings using the quadratic scoring rule from the paper.
 
@@ -251,44 +250,9 @@ def compute_earnings_df(prices: pd.DataFrame, run_id: int) -> pd.DataFrame:
     return sub[["agent_id", "time_step", "earnings"]]
 
 
-def render_earnings_chart(earnings_df: pd.DataFrame, up_to_t: int) -> go.Figure:
-    """Horizontal bar chart of cumulative earnings per agent up to time step t."""
-    filtered = earnings_df[earnings_df.time_step <= up_to_t]
-    cumul = filtered.groupby("agent_id")["earnings"].sum().reset_index()
-    cumul["name"] = cumul["agent_id"].map(CHAOS_AGENT_NAMES)
-    cumul["color"] = cumul["agent_id"].map(CHAOS_AGENT_COLORS)
-    cumul = cumul.sort_values("earnings")  # ascending so winner is at top
-
-    layout = base_layout(height=240)
-    layout.update(
-        xaxis=dict(
-            title="Cumulative earnings (pts)",
-            range=[0, 1300 * 50],
-            gridcolor=GRID_COLOR,
-            zerolinecolor=GRID_COLOR,
-        ),
-        yaxis=dict(title=None, gridcolor=GRID_COLOR, zerolinecolor=GRID_COLOR),
-        margin=dict(l=150, r=20, t=10, b=50),
-        showlegend=False,
-        hovermode="y unified",
-    )
-    fig = go.Figure(layout=layout)
-    fig.add_trace(go.Bar(
-        x=cumul["earnings"],
-        y=cumul["name"],
-        orientation="h",
-        marker_color=cumul["color"],
-        text=cumul["earnings"].apply(lambda v: f"{v:,.0f}"),
-        textposition="outside",
-        cliponaxis=False,
-    ))
-    return fig
-
-
 def render_category_bar_chart(counts: dict[str, int]) -> go.Figure:
     total = sum(counts.values())
-    # Sort highest → lowest so the tallest bar is always on the left
-    order = sorted(range(len(CAT_LABELS)), key=lambda i: counts.get(CAT_LABELS[i], 0), reverse=True)
+    order  = sorted(range(len(CAT_LABELS)), key=lambda i: counts.get(CAT_LABELS[i], 0), reverse=True)
     labels = [CAT_LABELS[i] for i in order]
     colors = [CAT_COLORS[i] for i in order]
     vals   = [counts[l] for l in labels]
@@ -315,62 +279,6 @@ def render_category_bar_chart(counts: dict[str, int]) -> go.Figure:
 
 
 # ---------------------------------------------------------------------------
-# Playback controls (Streamlit-native, rendered ABOVE the chart)
-# ---------------------------------------------------------------------------
-
-def render_playback_controls(key_prefix: str) -> int:
-    """Renders ▶ / ⏸ buttons + a Streamlit time-step slider above the chart.
-    Returns the current time step t (0–49).
-
-    Uses an unbound internal key (`{prefix}_t`) so that advance_playback can
-    freely mutate it between reruns — Streamlit forbids mutating a key that is
-    directly tied to a widget via `key=`.
-    """
-    play_key = f"{key_prefix}_playing"
-    t_key    = f"{key_prefix}_t"   # internal; NOT the slider widget key
-
-    if play_key not in st.session_state:
-        st.session_state[play_key] = False
-    if t_key not in st.session_state:
-        st.session_state[t_key] = 0
-
-    c_play, c_pause, c_slider = st.columns([1, 1, 10])
-    with c_play:
-        if st.button("▶", key=f"{key_prefix}_play_btn", help="Play from start"):
-            st.session_state[play_key] = True
-            st.session_state[t_key]    = 0
-    with c_pause:
-        if st.button("⏸", key=f"{key_prefix}_pause_btn", help="Pause"):
-            st.session_state[play_key] = False
-    with c_slider:
-        # No key= here; value= is driven by our internal state.
-        # If the user drags, the returned value differs → we detect and sync.
-        dragged = st.slider(
-            "Time step", 0, 49,
-            value=st.session_state[t_key],
-            label_visibility="collapsed",
-        )
-        if dragged != st.session_state[t_key]:
-            st.session_state[t_key]    = dragged
-            st.session_state[play_key] = False   # dragging stops auto-play
-
-    return int(st.session_state[t_key])
-
-
-def advance_playback(key_prefix: str, t: int) -> None:
-    """If currently playing, sleep briefly, increment t by 1, and rerun."""
-    play_key = f"{key_prefix}_playing"
-    t_key    = f"{key_prefix}_t"
-    if st.session_state.get(play_key, False):
-        if t < 49:
-            time.sleep(0.01)
-            st.session_state[t_key] = t + 1   # safe: t_key is NOT widget-bound
-            st.rerun()
-        else:
-            st.session_state[play_key] = False
-
-
-# ---------------------------------------------------------------------------
 # Plot helpers
 # ---------------------------------------------------------------------------
 
@@ -387,15 +295,16 @@ def base_layout(height: int = 480) -> dict:
         ),
         yaxis=dict(title="Price", gridcolor=GRID_COLOR, zerolinecolor=GRID_COLOR),
         legend=dict(
-            orientation="h", yanchor="top", y=-0.16, xanchor="center", x=0.5,
-            bgcolor="rgba(0,0,0,0)",
+            orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+            bgcolor="rgba(255,255,255,0.85)",
+            bordercolor=GRID_COLOR, borderwidth=1,
         ),
         hovermode="x unified",
     )
 
 
-def add_fundamental_line(fig: go.Figure) -> None:
-    fig.add_hline(
+def add_fundamental_line(fig: go.Figure, row=None, col=None) -> None:
+    kw: dict = dict(
         y=FUNDAMENTAL_PRICE,
         line_dash="dash",
         line_color=FUNDAMENTAL_COLOR,
@@ -404,78 +313,174 @@ def add_fundamental_line(fig: go.Figure) -> None:
         annotation_position="top right",
         annotation=dict(font=dict(color=FUNDAMENTAL_COLOR, size=11)),
     )
+    if row is not None:
+        kw["row"] = row
+    if col is not None:
+        kw["col"] = col
+    fig.add_hline(**kw)
 
 
-def snapshot_figure(
+def _animation_controls(fig: go.Figure) -> None:
+    """Add Plotly-native play/pause buttons and a period slider to fig."""
+    slider_steps = [
+        dict(
+            args=[[str(t)], dict(frame=dict(duration=0, redraw=True), mode="immediate")],
+            label=str(t) if (t % 10 == 0 or t == 49) else "",
+            method="animate",
+        )
+        for t in range(50)
+    ]
+    fig.update_layout(
+        updatemenus=[dict(
+            type="buttons",
+            showactive=False,
+            direction="left",
+            pad=dict(r=10, t=87),
+            x=0.1, xanchor="right",
+            y=0.0, yanchor="top",
+            buttons=[
+                dict(
+                    label="▶  Play",
+                    method="animate",
+                    args=[None, dict(
+                        frame=dict(duration=150, redraw=True),
+                        fromcurrent=True,
+                        transition=dict(duration=0),
+                    )],
+                ),
+                dict(
+                    label="⏸  Pause",
+                    method="animate",
+                    args=[[None], dict(
+                        frame=dict(duration=0, redraw=False),
+                        mode="immediate",
+                        transition=dict(duration=0),
+                    )],
+                ),
+            ],
+        )],
+        sliders=[dict(
+            active=0,
+            steps=slider_steps,
+            currentvalue=dict(
+                prefix="Period: ",
+                visible=True,
+                xanchor="center",
+                font=dict(size=13, color="#1A1A2E"),
+            ),
+            transition=dict(duration=0),
+            pad=dict(b=10, t=50),
+            len=0.9,
+            x=0.1, xanchor="left",
+            y=0.0, yanchor="top",
+            bgcolor=GRID_COLOR,
+            bordercolor="#CBD5E0",
+            tickcolor="#CBD5E0",
+            font=dict(color="#1A1A2E", size=10),
+        )],
+    )
+
+
+def build_animated_figure(
     prices: pd.DataFrame,
     run_id: int,
-    t: int,
     show_predictions: bool,
-    height: int = 480,
     dynamic_yaxis: bool = False,
+    earnings_df: pd.DataFrame | None = None,
+    cat_label: str | None = None,
+    height: int = 480,
 ) -> go.Figure:
-    """Snapshot of a single run up to time step t (for Pages 1 & 2).
+    """Pre-compute all 50 animation frames for smooth client-side playback.
 
-    When dynamic_yaxis=True the y-axis grows with the data as t increases,
-    hiding the spoiler of whether a bubble will form.
+    With earnings_df provided, adds a cumulative earnings subplot (Page 2 only).
     """
-    actual = actual_series(prices, run_id)
-    actual_t = actual[actual.time_step <= t]
+    actual    = actual_series(prices, run_id)
+    pred      = predicted_pivot(prices, run_id) if show_predictions else None
+    agent_ids = list(pred.columns) if pred is not None else []
+    n_pred    = len(agent_ids)
+    has_earn  = earnings_df is not None
 
-    fig = go.Figure(layout=base_layout(height=height))
-
-    if show_predictions:
-        pred   = predicted_pivot(prices, run_id)
-        pred_t = pred[pred.index <= t]
-        for i, agent_id in enumerate(pred_t.columns):
-            fig.add_trace(go.Scatter(
-                x=pred_t.index, y=pred_t[agent_id],
-                mode="lines",
-                name=f"Agent {agent_id} forecast",
-                line=dict(color=AGENT_PALETTE[i % len(AGENT_PALETTE)], width=1),
-                opacity=0.55,
-            ))
-
-    if dynamic_yaxis:
-        current_price = float(actual_t.actual_price.iloc[-1]) if not actual_t.empty else 0.0
-        if current_price > BUBBLE_PRICE_THRESHOLD:
-            line_color, line_width = "#FF5000", 4
-        elif current_price > 200:
-            line_color, line_width = "#FAA43A", 3.5
-        else:
-            line_color, line_width = ACTUAL_COLOR, 3
+    # ── Figure creation ────────────────────────────────────────────────────────
+    if has_earn:
+        fig = make_subplots(
+            rows=2, cols=1,
+            row_heights=[0.65, 0.35],
+            vertical_spacing=0.08,
+        )
+        layout = base_layout(height=height)
+        layout.pop("xaxis", None)
+        layout.pop("yaxis", None)
+        layout["margin"] = dict(l=50, r=20, t=20, b=170)
+        fig.update_layout(**layout)
+        fig.update_xaxes(title="Time step", gridcolor=GRID_COLOR,
+                         zerolinecolor=GRID_COLOR, range=[0, 49], row=1, col=1)
+        fig.update_yaxes(title="Price ($)", gridcolor=GRID_COLOR,
+                         zerolinecolor=GRID_COLOR, row=1, col=1)
+        fig.update_xaxes(title="Cumulative earnings (pts)", gridcolor=GRID_COLOR,
+                         zerolinecolor=GRID_COLOR, range=[0, 65_000], row=2, col=1)
+        fig.update_yaxes(gridcolor=GRID_COLOR, zerolinecolor=GRID_COLOR, row=2, col=1)
     else:
-        line_color, line_width = ACTUAL_COLOR, 3
+        layout = base_layout(height=height)
+        layout["margin"] = dict(l=50, r=20, t=20, b=170)
+        fig = go.Figure(layout=layout)
 
-    fig.add_trace(go.Scatter(
-        x=actual_t.time_step, y=actual_t.actual_price,
+    # ── Initial traces (t=0 state) ─────────────────────────────────────────────
+    t0_actual = actual[actual.time_step <= 0]
+    t0_pred   = pred[pred.index <= 0] if pred is not None else None
+
+    for i, agent_id in enumerate(agent_ids):
+        tr = go.Scatter(
+            x=t0_pred.index.tolist() if t0_pred is not None else [],
+            y=t0_pred[agent_id].tolist() if t0_pred is not None else [],
+            mode="lines",
+            name=f"Agent {agent_id} forecast",
+            line=dict(color=AGENT_PALETTE[i % len(AGENT_PALETTE)], width=1),
+            opacity=0.55,
+        )
+        if has_earn:
+            fig.add_trace(tr, row=1, col=1)
+        else:
+            fig.add_trace(tr)
+
+    price_tr = go.Scatter(
+        x=t0_actual.time_step.tolist(),
+        y=t0_actual.actual_price.tolist(),
         mode="lines",
         name="Actual price",
-        line=dict(color=line_color, width=line_width),
-    ))
-
-    if dynamic_yaxis:
-        t_max = float(actual_t.actual_price.max()) if not actual_t.empty else 0.0
-        y_max = max(150.0, t_max * 1.15)
-        fig.update_layout(yaxis_range=[0, y_max])
-        if 200 < t_max <= BUBBLE_PRICE_THRESHOLD:
-            fig.add_annotation(
-                xref="paper", yref="paper", x=0.98, y=0.96,
-                text="⚡ Price surging...",
-                showarrow=False,
-                font=dict(size=15, color="#FAA43A"),
-                align="right",
-                bgcolor="rgba(255,255,255,0.9)",
-                bordercolor="#FAA43A",
-                borderwidth=1,
-                borderpad=6,
-            )
+        line=dict(color=ACTUAL_COLOR, width=3),
+    )
+    if has_earn:
+        fig.add_trace(price_tr, row=1, col=1)
     else:
+        fig.add_trace(price_tr)
+
+    if has_earn:
+        for agent_id in range(6):
+            fig.add_trace(go.Bar(
+                x=[0.0],
+                y=[CHAOS_AGENT_NAMES[agent_id]],
+                orientation="h",
+                name=CHAOS_AGENT_NAMES[agent_id],
+                marker_color=CHAOS_AGENT_COLORS[agent_id],
+                showlegend=False,
+                textposition="outside",
+                cliponaxis=False,
+            ), row=2, col=1)
+
+    # ── Static elements ────────────────────────────────────────────────────────
+    if has_earn:
+        add_fundamental_line(fig, row=1, col=1)
+    else:
+        add_fundamental_line(fig)
+
+    if not dynamic_yaxis:
         run_max = float(actual.actual_price.max())
-        if run_max > 150:
-            fig.update_layout(yaxis_range=[0, 1000])
+        y_range = [0, 1000] if run_max > 150 else [0, 150]
+        if has_earn:
+            fig.update_yaxes(range=y_range, row=1, col=1)
         else:
-            fig.update_layout(yaxis_range=[0, 150])
+            fig.update_layout(yaxis_range=y_range)
+        if run_max <= 150:
             fig.add_annotation(
                 xref="paper", yref="paper", x=0.01, y=0.97,
                 text="⚠ Axis capped at 150",
@@ -483,68 +488,150 @@ def snapshot_figure(
                 font=dict(size=13, color="#DECF3F"),
                 align="left",
                 bgcolor="rgba(255,255,255,0.88)",
-                bordercolor="#DECF3F",
-                borderwidth=1,
-                borderpad=5,
+                bordercolor="#DECF3F", borderwidth=1, borderpad=5,
             )
 
-    add_fundamental_line(fig)
+    # ── Build animation frames ─────────────────────────────────────────────────
+    n_traces   = n_pred + 1 + (6 if has_earn else 0)
+    all_traces = list(range(n_traces))
+
+    frames = []
+    for t in range(50):
+        actual_t   = actual[actual.time_step <= t]
+        frame_data = []
+
+        if pred is not None:
+            pred_t = pred[pred.index <= t]
+            for agent_id in agent_ids:
+                frame_data.append(go.Scatter(
+                    x=pred_t.index.tolist(),
+                    y=pred_t[agent_id].tolist(),
+                ))
+
+        current_price = float(actual_t.actual_price.iloc[-1]) if not actual_t.empty else 0.0
+        if dynamic_yaxis:
+            if current_price > BUBBLE_PRICE_THRESHOLD:
+                lc, lw = "#FF5000", 4
+            elif current_price > 200:
+                lc, lw = "#FAA43A", 3.5
+            else:
+                lc, lw = ACTUAL_COLOR, 3
+        else:
+            lc, lw = ACTUAL_COLOR, 3
+
+        frame_data.append(go.Scatter(
+            x=actual_t.time_step.tolist(),
+            y=actual_t.actual_price.tolist(),
+            line=dict(color=lc, width=lw),
+        ))
+
+        if has_earn:
+            cumul = (earnings_df[earnings_df.time_step <= t]
+                     .groupby("agent_id")["earnings"].sum())
+            for agent_id in range(6):
+                val = float(cumul.get(agent_id, 0.0))
+                frame_data.append(go.Bar(
+                    x=[val],
+                    y=[CHAOS_AGENT_NAMES[agent_id]],
+                    text=[f"{val:,.0f}"],
+                ))
+
+        frame_annotations: list[dict] = []
+        frame_layout: dict = {"annotations": frame_annotations}
+
+        if dynamic_yaxis:
+            t_max = float(actual_t.actual_price.max()) if not actual_t.empty else 0.0
+            y_max = max(150.0, t_max * 1.15)
+            frame_layout["yaxis"] = {"range": [0, y_max]}
+
+        if t == 49 and cat_label and cat_label in CAT_LABELS:
+            cat_color = CAT_COLORS[CAT_LABELS.index(cat_label)]
+            frame_annotations.append(dict(
+                xref="paper", yref="paper", x=0.98, y=0.96,
+                text=f"<b>{cat_label.replace(chr(10), '  ')}</b>",
+                showarrow=False,
+                font=dict(size=22, color=cat_color),
+                align="right",
+                bgcolor="rgba(255,255,255,0.92)",
+                bordercolor=cat_color, borderwidth=2, borderpad=10,
+            ))
+        elif dynamic_yaxis:
+            t_max_val = float(actual_t.actual_price.max()) if not actual_t.empty else 0.0
+            if 200 < t_max_val <= BUBBLE_PRICE_THRESHOLD:
+                frame_annotations.append(dict(
+                    xref="paper", yref="paper", x=0.98, y=0.96,
+                    text="⚡ Price surging...",
+                    showarrow=False,
+                    font=dict(size=15, color="#FAA43A"),
+                    align="right",
+                    bgcolor="rgba(255,255,255,0.9)",
+                    bordercolor="#FAA43A", borderwidth=1, borderpad=6,
+                ))
+
+        frames.append(go.Frame(
+            data=frame_data,
+            layout=frame_layout,
+            name=str(t),
+            traces=all_traces,
+        ))
+
+    fig.frames = frames
+    _animation_controls(fig)
     return fig
 
 
-def duel_snapshot_figure(prices: pd.DataFrame, t: int, height: int = 560) -> go.Figure:
-    """Single-panel overlay of all three duel runs up to time step t.
+def build_animated_duel_figure(prices: pd.DataFrame, height: int = 560) -> go.Figure:
+    """Animated overlay of the three duel runs — all frames pre-computed client-side."""
+    qwen = actual_series(prices, QWEN_BASELINE_RUN_ID)
+    gem  = actual_series(prices, GEMINI_HERO_RUN_ID)
+    gpt  = actual_series(prices, GPT5_HERO_RUN_ID)
 
-    Gemini gets a fire glow (orange-red), GPT-5 gets an ice glow (blue),
-    Qwen stays neutral steel. All three lines reveal together as t advances.
-    """
-    fig = go.Figure(layout=base_layout(height=height))
+    layout = base_layout(height=height)
+    layout["margin"] = dict(l=50, r=20, t=20, b=170)
+    fig = go.Figure(layout=layout)
 
-    # ── Qwen baseline — neutral steel ────────────────────────────────────────
-    qwen   = actual_series(prices, QWEN_BASELINE_RUN_ID)
-    qwen_t = qwen[qwen.time_step <= t]
+    t0_q = qwen[qwen.time_step <= 0]
+    t0_g = gem[gem.time_step <= 0]
+    t0_p = gpt[gpt.time_step <= 0]
+
+    # Trace 0: Qwen baseline
     fig.add_trace(go.Scatter(
-        x=qwen_t.time_step, y=qwen_t.actual_price,
+        x=t0_q.time_step.tolist(), y=t0_q.actual_price.tolist(),
         mode="lines",
         name="🧭  6x Qwen-3 14B — Baseline",
         line=dict(color=QWEN_COLOR, width=2.5, dash="dot"),
     ))
-
-    # ── Gemini — fire glow ────────────────────────────────────────────────────
-    gem   = actual_series(prices, GEMINI_HERO_RUN_ID)
-    gem_t = gem[gem.time_step <= t]
+    # Trace 1: Gemini glow shadow
     fig.add_trace(go.Scatter(
-        x=gem_t.time_step, y=gem_t.actual_price,
+        x=t0_g.time_step.tolist(), y=t0_g.actual_price.tolist(),
         mode="lines", showlegend=False, hoverinfo="skip",
         line=dict(color="rgba(255,80,0,0.15)", width=16),
     ))
+    # Trace 2: Gemini actual
     fig.add_trace(go.Scatter(
-        x=gem_t.time_step, y=gem_t.actual_price,
+        x=t0_g.time_step.tolist(), y=t0_g.actual_price.tolist(),
         mode="lines",
         name="🔥  1x Gemini-3 Flash vs 5x Qwen-3 14B",
         line=dict(color=GEMINI_COLOR, width=3),
     ))
-
-    # ── GPT-5 mini — ice glow ────────────────────────────────────────────────
-    gpt   = actual_series(prices, GPT5_HERO_RUN_ID)
-    gpt_t = gpt[gpt.time_step <= t]
+    # Trace 3: GPT glow shadow
     fig.add_trace(go.Scatter(
-        x=gpt_t.time_step, y=gpt_t.actual_price,
+        x=t0_p.time_step.tolist(), y=t0_p.actual_price.tolist(),
         mode="lines", showlegend=False, hoverinfo="skip",
         line=dict(color="rgba(0,180,255,0.15)", width=16),
     ))
+    # Trace 4: GPT-5 actual
     fig.add_trace(go.Scatter(
-        x=gpt_t.time_step, y=gpt_t.actual_price,
+        x=t0_p.time_step.tolist(), y=t0_p.actual_price.tolist(),
         mode="lines",
         name="🧊  1x GPT-5 mini vs 5x Qwen-3 14B",
         line=dict(color=GPT5_COLOR, width=3),
     ))
 
-    # Static y-axis: based on the full peak across all three runs
     run_max = max(
-        float(actual_series(prices, QWEN_BASELINE_RUN_ID).actual_price.max()),
-        float(actual_series(prices, GEMINI_HERO_RUN_ID).actual_price.max()),
-        float(actual_series(prices, GPT5_HERO_RUN_ID).actual_price.max()),
+        float(qwen.actual_price.max()),
+        float(gem.actual_price.max()),
+        float(gpt.actual_price.max()),
     )
     if run_max > 150:
         fig.update_layout(yaxis_range=[0, 1000])
@@ -557,12 +644,30 @@ def duel_snapshot_figure(prices: pd.DataFrame, t: int, height: int = 560) -> go.
             font=dict(size=13, color="#DECF3F"),
             align="left",
             bgcolor="rgba(255,255,255,0.88)",
-            bordercolor="#DECF3F",
-            borderwidth=1,
-            borderpad=5,
+            bordercolor="#DECF3F", borderwidth=1, borderpad=5,
         )
 
     add_fundamental_line(fig)
+
+    frames = []
+    for t in range(50):
+        qt = qwen[qwen.time_step <= t]
+        gt = gem[gem.time_step <= t]
+        pt = gpt[gpt.time_step <= t]
+        frames.append(go.Frame(
+            data=[
+                go.Scatter(x=qt.time_step.tolist(), y=qt.actual_price.tolist()),
+                go.Scatter(x=gt.time_step.tolist(), y=gt.actual_price.tolist()),
+                go.Scatter(x=gt.time_step.tolist(), y=gt.actual_price.tolist()),
+                go.Scatter(x=pt.time_step.tolist(), y=pt.actual_price.tolist()),
+                go.Scatter(x=pt.time_step.tolist(), y=pt.actual_price.tolist()),
+            ],
+            name=str(t),
+            traces=[0, 1, 2, 3, 4],
+        ))
+
+    fig.frames = frames
+    _animation_controls(fig)
     return fig
 
 
@@ -673,16 +778,16 @@ def page_spirit_gallery(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
         index=homogeneous.index(QWEN_GROUP) if QWEN_GROUP in homogeneous else 0,
     )
 
-    # Use a fixed default run whenever the model changes; reset playback.
+    if chosen_group is None:
+        return
+
     if st.session_state.get("p1_group") != chosen_group:
-        st.session_state["p1_group"]   = chosen_group
+        st.session_state["p1_group"] = chosen_group
         group_runs = meta[meta.model_group == chosen_group]
         default_id = DEFAULT_RUN_IDS.get(chosen_group)
         if default_id is None:
             default_id = int(random.choice(group_runs.run_id.tolist()))
-        st.session_state["p1_run_id"]  = default_id
-        st.session_state["p1_t"]       = 0
-        st.session_state["p1_playing"] = False
+        st.session_state["p1_run_id"] = default_id
 
     chosen_run = st.session_state["p1_run_id"]
 
@@ -691,9 +796,8 @@ def page_spirit_gallery(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
         help="Overlay each of the 6 agents' next-period price expectations.",
     )
 
-    t = render_playback_controls("p1")
-    fig = snapshot_figure(prices, chosen_run, t, show_predictions=show_pred)
-    st.plotly_chart(fig, width="stretch")
+    fig = build_animated_figure(prices, chosen_run, show_predictions=show_pred)
+    st.plotly_chart(fig, use_container_width=True)
 
     st.caption(
         "Bold line: the realized market price. Thin lines: each agent's "
@@ -701,13 +805,10 @@ def page_spirit_gallery(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
         f"fundamental value $p_f$ = {FUNDAMENTAL_PRICE:.0f}."
     )
 
-    advance_playback("p1", t)
-
 
 # ---------------------------------------------------------------------------
 # Page 2: Mixed Market Chaos
 # ---------------------------------------------------------------------------
-
 
 def page_chaos(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
     st.title("Mixed Market Chaos")
@@ -734,10 +835,6 @@ def page_chaos(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
         if st.button("🎲  Run Chaos Roulette", type="primary", use_container_width=True):
             new_run_id = int(random.choice(chaos_runs.run_id.tolist()))
             st.session_state["chaos_run_id"] = new_run_id
-            # Reset playback and auto-play so the new run animates from the start
-            st.session_state["p2_t"]       = 0
-            st.session_state["p2_playing"] = True
-            # Increment category count for this run
             cat = cat_map.get(new_run_id, CAT_LABELS[0])
             st.session_state["chaos_cat_counts"][cat] += 1
     with col_caption:
@@ -757,43 +854,26 @@ def page_chaos(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
         unsafe_allow_html=True,
     )
 
-    t = render_playback_controls("p2")
-    fig = snapshot_figure(prices, int(run_id), t, show_predictions=show_pred, height=480,
-                          dynamic_yaxis=True)
-    if t == 49:
-        cat = cat_map.get(int(run_id), "")
-        if cat in CAT_LABELS:
-            cat_color = CAT_COLORS[CAT_LABELS.index(cat)]
-            fig.add_annotation(
-                xref="paper", yref="paper", x=0.98, y=0.96,
-                text=f"<b>{cat.replace(chr(10), '  ')}</b>",
-                showarrow=False,
-                font=dict(size=22, color=cat_color),
-                align="right",
-                bgcolor="rgba(255,255,255,0.92)",
-                bordercolor=cat_color,
-                borderwidth=2,
-                borderpad=10,
-            )
-    st.plotly_chart(fig, width="stretch")
-
-    advance_playback("p2", t)
-
-    st.divider()
-    st.subheader("Agent Earnings")
-    st.caption(
-        "Each agent earns points based on forecast accuracy. "
-        "The closer the prediction to the realized price, the higher the score "
-        f"(max {1300:,} pts per period)."
-    )
     earnings_df = compute_earnings_df(prices, int(run_id))
-    st.plotly_chart(render_earnings_chart(earnings_df, t), width="stretch")
-    if t == 49:
-        cumul = earnings_df.groupby("agent_id")["earnings"].sum()
-        winner_id = int(cumul.idxmax())
-        winner_name = CHAOS_AGENT_NAMES.get(winner_id, f"Agent {winner_id}")
-        winner_pts = int(cumul.max())
-        st.success(f"🏆 Winner: **{winner_name}** — {winner_pts:,} pts")
+    cat_label   = cat_map.get(int(run_id))
+
+    fig = build_animated_figure(
+        prices, int(run_id),
+        show_predictions=show_pred,
+        dynamic_yaxis=True,
+        earnings_df=earnings_df,
+        cat_label=cat_label,
+        height=600,
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    # Winner callout — always visible (not gated on t=49)
+    cumul     = earnings_df.groupby("agent_id")["earnings"].sum()
+    winner_id = int(cumul.idxmax())
+    st.success(
+        f"🏆 Winner (all 50 periods): **{CHAOS_AGENT_NAMES.get(winner_id, f'Agent {winner_id}')}** "
+        f"— {int(cumul.max()):,} pts"
+    )
 
     st.divider()
     st.subheader("Outcome distribution")
@@ -811,7 +891,7 @@ def page_chaos(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
             st.rerun()
     st.plotly_chart(
         render_category_bar_chart(st.session_state["chaos_cat_counts"]),
-        width="stretch",
+        use_container_width=True,
     )
 
 
@@ -826,11 +906,8 @@ def page_adaptation_duel(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
         "three different markets unfold and see the impact of that one adaptive agent."
     )
 
-    t = render_playback_controls("p3")
-    fig = duel_snapshot_figure(prices, t)
-    st.plotly_chart(fig, width="stretch")
-
-    advance_playback("p3", t)
+    fig = build_animated_duel_figure(prices)
+    st.plotly_chart(fig, use_container_width=True)
 
 
 # ---------------------------------------------------------------------------
