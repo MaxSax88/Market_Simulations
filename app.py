@@ -113,21 +113,27 @@ CAT_LABELS = [
 ]
 CAT_COLORS = ["#60BD68", "#DECF3F", "#FAA43A", "#E05530", "#B03020"]
 
+# Mapping verified empirically from parquet data (t=0 prediction distributions):
+#   agent_id=0 always predicts 50.0 (std=0) → OLMo
+#   agent_id=5 always predicts 60.0 (std=0) → Gemini (wins 33/50 runs)
+#   agent_id=3 predicts 60.0 in 64% of runs, std=9.8 → GPT-5 (erratic)
+#   agent_id=2 medium-high std (6.5), mostly 50 → DeepSeek
+#   agents 1/4 → Gemma/Qwen by std profile (1=3.1, 4=2.0 ≈ Qwen 2.2)
 CHAOS_AGENT_NAMES: dict[int, str] = {
-    0: "Qwen-3 14B",
-    1: "OLMo-3 7B Think",
+    0: "OLMo-3 7B Think",
+    1: "Gemma-3 27B",
     2: "DeepSeek-R1 Llama 8B",
-    3: "Gemini-3 Flash",
-    4: "Gemma-3 27B",
-    5: "GPT-5 mini",
+    3: "GPT-5 mini",
+    4: "Qwen-3 14B",
+    5: "Gemini-3 Flash",
 }
 CHAOS_AGENT_COLORS: dict[int, str] = {
-    0: "#5DA5DA",
-    1: "#FAA43A",
-    2: "#60BD68",
-    3: "#FF5000",
-    4: "#B276B2",
-    5: "#00B4FF",
+    0: "#FAA43A",   # OLMo — amber
+    1: "#B276B2",   # Gemma — purple
+    2: "#60BD68",   # DeepSeek — green
+    3: "#00B4FF",   # GPT-5 — ice blue (matches Page 3)
+    4: "#5DA5DA",   # Qwen — steel blue
+    5: "#FF5000",   # Gemini — fire orange (matches Page 3)
 }
 
 
@@ -410,7 +416,7 @@ def build_animated_figure(
         layout = base_layout(height=height)
         layout.pop("xaxis", None)
         layout.pop("yaxis", None)
-        layout["margin"] = dict(l=50, r=20, t=20, b=170)
+        layout["margin"] = dict(l=50, r=20, t=70, b=170)  # t=70 leaves room above legend for category label
         fig.update_layout(**layout)
         fig.update_xaxes(title="Time step", gridcolor=GRID_COLOR,
                          zerolinecolor=GRID_COLOR, range=[0, 49], row=1, col=1)
@@ -547,13 +553,14 @@ def build_animated_figure(
         if t == 49 and cat_label and cat_label in CAT_LABELS:
             cat_color = CAT_COLORS[CAT_LABELS.index(cat_label)]
             frame_annotations.append(dict(
-                xref="paper", yref="paper", x=0.98, y=0.96,
+                xref="paper", yref="paper",
+                x=0.98, y=1.07, yanchor="bottom",
                 text=f"<b>{cat_label.replace(chr(10), '  ')}</b>",
                 showarrow=False,
-                font=dict(size=22, color=cat_color),
+                font=dict(size=18, color=cat_color),
                 align="right",
                 bgcolor="rgba(255,255,255,0.92)",
-                bordercolor=cat_color, borderwidth=2, borderpad=10,
+                bordercolor=cat_color, borderwidth=2, borderpad=8,
             ))
         elif dynamic_yaxis:
             t_max_val = float(actual_t.actual_price.max()) if not actual_t.empty else 0.0
@@ -797,7 +804,7 @@ def page_spirit_gallery(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
     )
 
     fig = build_animated_figure(prices, chosen_run, show_predictions=show_pred)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     st.caption(
         "Bold line: the realized market price. Thin lines: each agent's "
@@ -832,9 +839,10 @@ def page_chaos(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
 
     col_btn, col_caption = st.columns([1, 4])
     with col_btn:
-        if st.button("🎲  Run Chaos Roulette", type="primary", use_container_width=True):
+        if st.button("🎲  Run Chaos Roulette", type="primary", width='stretch'):
             new_run_id = int(random.choice(chaos_runs.run_id.tolist()))
             st.session_state["chaos_run_id"] = new_run_id
+            st.session_state["chaos_autoplay"] = True
             cat = cat_map.get(new_run_id, CAT_LABELS[0])
             st.session_state["chaos_cat_counts"][cat] += 1
     with col_caption:
@@ -865,7 +873,36 @@ def page_chaos(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
         cat_label=cat_label,
         height=600,
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
+
+    # Auto-play when a new run is selected via Roulette
+    if st.session_state.get("chaos_autoplay", False):
+        st.session_state["chaos_autoplay"] = False
+        import streamlit.components.v1 as components
+        components.html("""
+        <script>
+        (function() {
+            var tries = 0;
+            function tryPlay() {
+                tries++;
+                var plots = window.parent.document.querySelectorAll('.js-plotly-plot');
+                var found = false;
+                plots.forEach(function(plot) {
+                    if (plot._frames && plot._frames.length > 1 && window.parent.Plotly) {
+                        window.parent.Plotly.animate(plot, null, {
+                            frame: {duration: 150, redraw: true},
+                            fromcurrent: false,
+                            transition: {duration: 0}
+                        });
+                        found = true;
+                    }
+                });
+                if (!found && tries < 15) { setTimeout(tryPlay, 200); }
+            }
+            setTimeout(tryPlay, 400);
+        })();
+        </script>
+        """, height=0)
 
     # Winner callout — always visible (not gated on t=49)
     cumul     = earnings_df.groupby("agent_id")["earnings"].sum()
@@ -891,7 +928,7 @@ def page_chaos(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
             st.rerun()
     st.plotly_chart(
         render_category_bar_chart(st.session_state["chaos_cat_counts"]),
-        use_container_width=True,
+        width='stretch',
     )
 
 
@@ -907,7 +944,7 @@ def page_adaptation_duel(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
     )
 
     fig = build_animated_duel_figure(prices)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 
 # ---------------------------------------------------------------------------
