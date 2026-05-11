@@ -113,26 +113,23 @@ CAT_LABELS = [
 ]
 CAT_COLORS = ["#60BD68", "#DECF3F", "#FAA43A", "#E05530", "#B03020"]
 
-# Mapping verified empirically from parquet data (t=0 prediction distributions):
-#   agent_id=0 always predicts 50.0 (std=0) → OLMo
-#   agent_id=5 always predicts 60.0 (std=0) → Gemini (wins 33/50 runs)
-#   agent_id=3 predicts 60.0 in 64% of runs, std=9.8 → GPT-5 (erratic)
-#   agent_id=2 medium-high std (6.5), mostly 50 → DeepSeek
-#   agents 1/4 → Gemma/Qwen by std profile (1=3.1, 4=2.0 ≈ Qwen 2.2)
+# Order matches the model list from the experiment config (0-indexed):
+# ['allenai/Olmo-3-7B-Think', 'Qwen/Qwen3-14B', 'deepseek-ai/DeepSeek-R1-Distill-Llama-8B',
+#  'gpt-5-mini', 'gemma-3-27b-it', 'gemini-3-flash-preview']
 CHAOS_AGENT_NAMES: dict[int, str] = {
     0: "OLMo-3 7B Think",
-    1: "Gemma-3 27B",
+    1: "Qwen-3 14B",
     2: "DeepSeek-R1 Llama 8B",
     3: "GPT-5 mini",
-    4: "Qwen-3 14B",
+    4: "Gemma-3 27B",
     5: "Gemini-3 Flash",
 }
 CHAOS_AGENT_COLORS: dict[int, str] = {
     0: "#FAA43A",   # OLMo — amber
-    1: "#B276B2",   # Gemma — purple
+    1: "#5DA5DA",   # Qwen — steel blue
     2: "#60BD68",   # DeepSeek — green
     3: "#00B4FF",   # GPT-5 — ice blue (matches Page 3)
-    4: "#5DA5DA",   # Qwen — steel blue
+    4: "#B276B2",   # Gemma — purple
     5: "#FF5000",   # Gemini — fire orange (matches Page 3)
 }
 
