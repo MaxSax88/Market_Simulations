@@ -346,7 +346,7 @@ def _animation_controls(fig: go.Figure) -> None:
                     label="▶  Play",
                     method="animate",
                     args=[None, dict(
-                        frame=dict(duration=150, redraw=True),
+                        frame=dict(duration=75, redraw=True),
                         fromcurrent=True,
                         transition=dict(duration=0),
                     )],
@@ -413,7 +413,7 @@ def build_animated_figure(
         layout = base_layout(height=height)
         layout.pop("xaxis", None)
         layout.pop("yaxis", None)
-        layout["margin"] = dict(l=50, r=20, t=70, b=170)  # t=70 leaves room above legend for category label
+        layout["margin"] = dict(l=50, r=20, t=120, b=170)
         fig.update_layout(**layout)
         fig.update_xaxes(title="Time step", gridcolor=GRID_COLOR,
                          zerolinecolor=GRID_COLOR, range=[0, 49], row=1, col=1)
@@ -547,30 +547,18 @@ def build_animated_figure(
             y_max = max(150.0, t_max * 1.15)
             frame_layout["yaxis"] = {"range": [0, y_max]}
 
-        if t == 49 and cat_label and cat_label in CAT_LABELS:
+        if cat_label and cat_label in CAT_LABELS:
             cat_color = CAT_COLORS[CAT_LABELS.index(cat_label)]
             frame_annotations.append(dict(
                 xref="paper", yref="paper",
-                x=0.98, y=1.07, yanchor="bottom",
+                x=0.98, y=1.20, yanchor="bottom",
                 text=f"<b>{cat_label.replace(chr(10), '  ')}</b>",
                 showarrow=False,
-                font=dict(size=18, color=cat_color),
+                font=dict(size=24, color=cat_color),
                 align="right",
                 bgcolor="rgba(255,255,255,0.92)",
                 bordercolor=cat_color, borderwidth=2, borderpad=8,
             ))
-        elif dynamic_yaxis:
-            t_max_val = float(actual_t.actual_price.max()) if not actual_t.empty else 0.0
-            if 200 < t_max_val <= BUBBLE_PRICE_THRESHOLD:
-                frame_annotations.append(dict(
-                    xref="paper", yref="paper", x=0.98, y=0.96,
-                    text="⚡ Price surging...",
-                    showarrow=False,
-                    font=dict(size=15, color="#FAA43A"),
-                    align="right",
-                    bgcolor="rgba(255,255,255,0.9)",
-                    bordercolor="#FAA43A", borderwidth=1, borderpad=6,
-                ))
 
         frames.append(go.Frame(
             data=frame_data,
@@ -692,23 +680,22 @@ def page_intro(prices: pd.DataFrame, meta: pd.DataFrame) -> None:  # noqa: ARG00
 
         ### How does the market work?
 
-        Six AI language models (LLMs) each act as a trader in a simple financial market.
+        Six Large Language Models (LLMs) each act as a trader in a simple financial market.
         Every period (round), each agent submits its **forecast** of what the asset price
-        will be next period.  The actual market price that emerges is then the average of
-        all six forecasts, plus a fixed dividend — so the price is literally *made of
-        beliefs*.
+        will be two periods ahead of the most recent realised price.  The actual market price that emerges is then the average of
+        all six forecasts, plus a fixed dividend, so the price is a function of *expectations*.
 
-        Because today's price depends on what agents expect tomorrow, and tomorrow's
+        Because today's price depends on what agents expect in the future, and future
         expectations react to today's price, the market has a built-in **feedback loop**.
-        This loop is what allows prices to spiral far above the true fundamental value —
-        a *bubble* — or converge smoothly towards it, depending on how each model reasons.
+        This loop is what allows prices to spiral far above the true fundamental value, creating a 
+        a *bubble*, or converge smoothly towards it, depending on how each agent behaves.
 
         ### What is the fundamental value?
 
-        The asset has a true underlying value of **$60** (marked as the dashed green line
-        in all charts).  A perfectly rational agent would always forecast $60 and the
+        The asset has a true underlying value of **&dollar;60** (marked as the dashed green line
+        in all charts).  A perfectly rational agent would always forecast &dollar;60 and the
         market would never deviate.  In practice, LLMs behave very differently from one
-        another — some anchor close to $60, others trend-chase and amplify deviations.
+        another — some anchor close to &dollar;60, others trend-chase and amplify deviations.
 
         ### What can I explore?
         """
@@ -719,13 +706,13 @@ def page_intro(prices: pd.DataFrame, meta: pd.DataFrame) -> None:  # noqa: ARG00
         st.info(
             "**📊 Taxonomy of Machine Spirits**\n\n"
             "Pick a model and watch 6 copies of it trade together. "
-            "How does each LLM's economic 'personality' shape the market?"
+            "How does each LLM's economic 'Machine Spirit' shape the market?"
         )
     with col2:
         st.info(
             "**🎲 Mixed Market Chaos**\n\n"
-            "Six *different* LLMs share one market. Roll the dice — same models, "
-            "different random seeds — and see how wildly outcomes can vary."
+            "Six *different* LLMs share one market. Roll the dice, same models, "
+            "different random seeds, and see how wildly outcomes can vary."
         )
     with col3:
         st.info(
@@ -854,7 +841,7 @@ def page_chaos(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
     show_pred = st.checkbox("Show agent forecasts", value=True, key="chaos_show_pred")
 
     st.markdown(
-        f"<div style='margin: 4px 0 -8px 4px; color:#4A5568;'>"
+        f"<div style='margin: 4px 0 8px 4px; color:#4A5568;'>"
         f"<span class='ticker-pill'>Seed {int(row.seed)}</span></div>",
         unsafe_allow_html=True,
     )
@@ -875,29 +862,37 @@ def page_chaos(prices: pd.DataFrame, meta: pd.DataFrame) -> None:
     # Auto-play when a new run is selected via Roulette
     if st.session_state.get("chaos_autoplay", False):
         st.session_state["chaos_autoplay"] = False
+        _v = st.session_state.get("chaos_autoplay_v", 0) + 1
+        st.session_state["chaos_autoplay_v"] = _v
         import streamlit.components.v1 as components
-        components.html("""
+        components.html(f"""
         <script>
-        (function() {
+        /* autoplay-v{_v} */
+        (function() {{
             var tries = 0;
-            function tryPlay() {
+            function tryPlay() {{
                 tries++;
                 var plots = window.parent.document.querySelectorAll('.js-plotly-plot');
-                var found = false;
-                plots.forEach(function(plot) {
-                    if (plot._frames && plot._frames.length > 1 && window.parent.Plotly) {
-                        window.parent.Plotly.animate(plot, null, {
-                            frame: {duration: 150, redraw: true},
-                            fromcurrent: false,
-                            transition: {duration: 0}
-                        });
-                        found = true;
-                    }
-                });
-                if (!found && tries < 15) { setTimeout(tryPlay, 200); }
-            }
-            setTimeout(tryPlay, 400);
-        })();
+                var animated = null;
+                plots.forEach(function(plot) {{
+                    if (!animated && plot._fullLayout &&
+                            plot._fullLayout.updatemenus &&
+                            plot._fullLayout.updatemenus.length > 0) {{
+                        animated = plot;
+                    }}
+                }});
+                if (animated && window.parent.Plotly) {{
+                    window.parent.Plotly.animate(animated, null, {{
+                        frame: {{duration: 75, redraw: true}},
+                        fromcurrent: false,
+                        transition: {{duration: 0}}
+                    }});
+                }} else if (tries < 25) {{
+                    setTimeout(tryPlay, 300);
+                }}
+            }}
+            setTimeout(tryPlay, 600);
+        }})();
         </script>
         """, height=0)
 
